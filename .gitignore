@@ -1,0 +1,8 @@
+# Generated artifacts and caches (per SPEC / plan)
+spread.db
+cache/
+__pycache__/
+*.pyc
+
+# Freebuff workspace metadata (not part of the prototype)
+.freebuff/

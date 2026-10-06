@@ -1,0 +1,23 @@
+[
+  {
+    "event_key": "fed-2026-10",
+    "title": "Fed decision, October 2026 meeting",
+    "kalshi": "KXFEDDECISION-26OCT-H0",
+    "polymarket": "will-there-be-no-change-in-fed-interest-rates-after-the-october-2026-meeting-20260617190324031",
+    "note": "Kalshi's 0 bps bucket and Polymarket's 'no change' market both price the Fed holding rates at the October 2026 meeting."
+  },
+  {
+    "event_key": "cpi-2026-09",
+    "title": "US CPI, month-over-month, September 2026",
+    "kalshi": "KXCPI-26SEP-T0.7",
+    "polymarket": "will-monthly-inflation-increase-by-0pt8-or-more-in-september-2026",
+    "note": "CPI is published to one decimal, so Kalshi's 'more than 0.7%' is Polymarket's '0.8% or more'. Both settle on the BLS September 2026 CPI release."
+  },
+  {
+    "event_key": "payrolls-2026-10",
+    "title": "US nonfarm payrolls, October 2026",
+    "kalshi": "KXPAYROLLS-26OCT-T100000",
+    "polymarket": "will-the-us-add-at-least-100k-jobs-in-october-2026",
+    "note": "Both settle on the BLS Employment Situation report for October 2026; Kalshi says 'above 100000' where Polymarket says 'at least 100k'."
+  }
+]

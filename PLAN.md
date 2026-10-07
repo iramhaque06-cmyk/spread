@@ -15,9 +15,9 @@ sports-odds provider is confirmed. The catalog is much larger than the prototype
 | Venue | Open markets measured | Notes |
 |---|---|---|
 | Kalshi | **> 200,000** total; **> 120,000** excluding parlay combos | cursor was still not exhausted when the scan was capped |
-| Polymarket | **> 12,000** | keyset cursor still not exhausted at 12,000 |
+| Polymarket | **> 20,000** | keyset cursor still not exhausted at 20,000 (see the pagination row: the cursor request parameter is `after_cursor`, and the earlier 12,000 figure came from sending the wrong name, which silently repeated page 1) |
 | Manifold | **39,645** | scan exhausted, so this is the true count |
-| **Total** | **≈ 175,000+ markets** | before matching, before sports |
+| **Total** | **≈ 180,000+ markets** | before matching, before sports |
 
 The 175k figure is the single most important input to the file/size plan (§4) and the risk
 list (§5). It also means "show every market" and "load fast" pull in opposite directions, so
@@ -32,10 +32,10 @@ the plan proposes a default and flags it as a decision (§6).
 | | **Kalshi** | **Polymarket** | **Manifold** |
 |---|---|---|---|
 | **Type** | `prediction_market` — real money (CFTC-regulated US exchange) | `prediction_market` — real money (CLOB, on-chain) | `play_money` — mana, explicitly not cash |
-| **List-all-open endpoint** | `GET https://api.elections.kalshi.com/trade-api/v2/markets?status=open&limit=1000&cursor={cursor}` | `GET https://gamma-api.polymarket.com/markets/keyset?closed=false&limit=100&next_cursor={cursor}` | `GET https://api.manifold.markets/v0/search-markets?filter=open&sort=newest&limit=1000&beforeTime={createdTime}` |
-| **Pagination, verified live** | Cursor: 1000 rows/page, cursor advances, **0 duplicates in 200,000 rows scanned** | Keyset. Plain `?offset=` breaks past ~2,000 → HTTP 422 *"offset too large, use /markets/keyset"*. Keyset returns `{markets, next_cursor}` | `offset` up to 1000, then `beforeTime` = `createdTime` of the last row. Verified: 40 pages, exhausted at 39,645 |
+| **List-all-open endpoint** | `GET https://api.elections.kalshi.com/trade-api/v2/markets?status=open&limit=1000&cursor={cursor}` | `GET https://gamma-api.polymarket.com/markets/keyset?closed=false&limit=100&after_cursor={cursor}` | `GET https://api.manifold.markets/v0/search-markets?filter=open&sort=newest&limit=1000&beforeTime={createdTime}` |
+| **Pagination, verified live** | Cursor: 1000 rows/page, cursor advances, **0 duplicates in 200,000 rows scanned** | Keyset. Plain `?offset=` breaks past ~2,100 → HTTP 422 *"offset too large, use /markets/keyset"*. The response carries `next_cursor`, but the **request** parameter is **`after_cursor`** — sending `next_cursor` (or `cursor`, `after`, `key`, `token`) is **silently ignored and repeats page 1 forever**. With `after_cursor`: **zero overlap, 20,000 deduped open markets in 200 pages, not exhausted** | `offset` up to 1000, then `beforeTime` = `createdTime` of the last row. Verified: 40 pages, exhausted at 39,645 |
 | **Parlay handling** | **Required**: `mve_filter=exclude` (verified: drops `KXMVECROSSCATEGORY`; still >120k rows) | none needed | none needed |
-| **Batch price lookup** | `GET /markets?tickers=A,B,C` (verified, returns exactly those) | Gamma `?id={id}` for one; CLOB `/prices-history?market={tokenId}` for a timestamp | `GET /v0/market-probs?ids=A&ids=B` (≤100 ids, 1 s cache) |
+| **Batch price lookup** | `GET /markets?tickers=A,B,C` (verified, returns exactly those) | Gamma **`?slug={slug}`** for one — `?id=` wants the numeric id and answers **422 for a slug**, and stored ids are slugs; CLOB `/prices-history?market={tokenId}` for a timestamp | `GET /v0/market-probs?ids=A&ids=B` (≤100 ids, 1 s cache). **A one-element list is a trap:** requests encodes it as a bare `?ids=A`, and Manifold's validator answers **400 "Expected array, received string"** — so a lone id must take `GET /v0/market/{{id}}` instead (measured 2026-10-07). Markets with no binary `prob` return `answerProbs` (often empty) and therefore have no single price to store |
 | **Auth** | none for market data (all audit calls were keyless) | none (all audit calls keyless) | none |
 | **Rate limits** | Docs give **authenticated** token buckets (Basic read 200 tok/s, default cost 10 tok ⇒ ~20 req/s; 429 has no `Retry-After`). Keyless limits are undocumented ⇒ **we self-limit to ≤3 req/s** | Documented per IP: Gamma `/markets` **300 req/10 s**, CLOB `/prices-history` **1,000 req/10 s**; excess is queued, not rejected | **500 req/min per IP** (docs) |
 | **Terms on automated access + display** | Public developer docs invite read-only market-data use; `robots.txt` allows all; **no redistribution prohibition found**. Confidence: medium-high | Public docs for public data; the standard ToU is about trading/accounts, **no display prohibition found**. Confidence: medium-high (ToU is long and not machine-readable) | **Explicit**: "Permitted uses: building bots, automated trading systems, algorithmic tools, and integrations". Scraping *outside* the API and rate-limit circumvention are prohibited. AI/ML training on API data needs a licence for commercial use; **personal / non-commercial projects permitted** |
@@ -176,7 +176,7 @@ One full listing pass per venue, paginated, resumable, cached:
 | Venue | Requests (measured) | Wall time at ≤3 req/s |
 |---|---|---|
 | Kalshi (`mve_filter=exclude`) | ≥ 120 pages × 1000 | ~1 min + pauses |
-| Polymarket (keyset 100/page) | ≥ 120 pages | ~1 min |
+| Polymarket (keyset 100/page) | ≥ 200 pages | ~1 min |
 | Manifold (1000/page) | 40 pages | ~15 s |
 
 - Upsert every market; set `is_open = 0` for anything not seen in the pass (never delete).

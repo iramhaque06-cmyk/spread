@@ -11,12 +11,204 @@ each call.
 from __future__ import annotations
 
 import re
+from typing import Iterator
 
-from . import DEFAULT_MAX_AGE, Quote, get_json, now_iso
+from . import (
+    DEFAULT_MAX_AGE,
+    PRICE_MAX_AGE,
+    MarketRecord,
+    Quote,
+    chunks,
+    get_json,
+    now_iso,
+    outcome,
+)
 
 API = "https://api.elections.kalshi.com/trade-api/v2"
 SITE = "https://kalshi.com"
 SERIES_MAX_AGE = 86400  # series titles (and so URL slugs) rarely move
+CATALOG_MAX_AGE = 3600  # the open catalog is re-listed every 6 hours
+
+# The catalog is read page by page. 1000 is the largest page Kalshi serves.
+CATALOG_PAGE = 1000
+# ``mve_filter=exclude`` drops the KXMVECROSSCATEGORY parlay combos that are
+# ~99.9% of all open markets (measured: 199,731 of 200,000 rows scanned).
+# A parlay is not one real-world event, so it cannot be compared to anything.
+PARLAY_FILTER = "exclude"
+# Prices refresh in batches: 100 tickers fit in one query string comfortably
+# (verified live: 100 requested, 100 returned).
+PRICE_BATCH = 100
+
+
+def list_open_markets(*, limit: int | None = None, max_age: int | None = None) -> Iterator[MarketRecord]:
+    """Every open non-parlay market, newest page at a time.
+
+    One ``GET /series`` returns all 14,714 series in a single response
+    (Kalshi ignores ``limit`` here), so every market can be given its series
+    title, category and canonical URL without a request per market. The open
+    events listing then maps an event ticker to its series.
+    """
+    max_age = CATALOG_MAX_AGE if max_age is None else max_age
+    series = series_map()
+    events = event_map(max_age=max_age)
+
+    cursor: str | None = None
+    seen = 0
+    while True:
+        params = {
+            "status": "open",
+            "limit": CATALOG_PAGE,
+            "mve_filter": PARLAY_FILTER,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        body = _bulk(f"{API}/markets", params=params, max_age=max_age)
+        markets = body.get("markets") or []
+        for raw in markets:
+            record = parse_open_market(raw, series=series, events=events)
+            if record is not None:
+                yield record
+        seen += len(markets)
+        cursor = body.get("cursor")
+        if not cursor or not markets or (limit is not None and seen >= limit):
+            return
+
+
+def get_prices(ids, *, max_age: int | None = None) -> dict[str, MarketRecord]:
+    """Latest price evidence for a set of tickers, in batches of 100.
+
+    Only the price fields are filled in: the catalog pass owns titles, URLs
+    and rules, and a price refresh must not blank them out.
+    """
+    max_age = PRICE_MAX_AGE if max_age is None else max_age
+    out: dict[str, MarketRecord] = {}
+    for chunk in chunks(list(ids), PRICE_BATCH):
+        body = _bulk(
+            f"{API}/markets",
+            params={"tickers": ",".join(chunk)},
+            max_age=max_age,
+        )
+        for raw in body.get("markets") or []:
+            record = parse_price(raw)
+            if record is not None:
+                out[record.market_id] = record
+    return out
+
+
+def series_map(*, max_age: int = SERIES_MAX_AGE) -> dict[str, dict]:
+    """``series_ticker -> series record`` for every series Kalshi has."""
+    body = _bulk(f"{API}/series", max_age=max_age)
+    return {
+        item["ticker"]: item
+        for item in (body.get("series") or [])
+        if item.get("ticker")
+    }
+
+
+def event_map(*, max_age: int = CATALOG_MAX_AGE) -> dict[str, dict]:
+    """``event_ticker -> event record`` for every open event.
+
+    Paginated 200 at a time; the events listing is the only place a market's
+    parent series ticker appears.
+    """
+    out: dict[str, dict] = {}
+    cursor: str | None = None
+    while True:
+        params = {"status": "open", "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        body = _bulk(f"{API}/events", params=params, max_age=max_age)
+        events = body.get("events") or []
+        for item in events:
+            if item.get("event_ticker"):
+                out[item["event_ticker"]] = item
+        cursor = body.get("cursor")
+        if not cursor or not events:
+            return out
+
+
+def parse_open_market(
+    raw: dict,
+    *,
+    series: dict | None = None,
+    events: dict | None = None,
+    fetched_at: str = "",
+) -> MarketRecord | None:
+    """One catalog row, or ``None`` when the record has no ticker at all.
+
+    A market with no quote is kept with ``price=None`` rather than dropped: it
+    is open, it belongs in the catalog, and the page can say it has no price
+    yet instead of pretending it does not exist.
+    """
+    market = raw.get("market", raw)
+    ticker = market.get("ticker") or ""
+    if not ticker:
+        return None
+
+    event = (events or {}).get(market.get("event_ticker") or "") or {}
+    info = (series or {}).get(event.get("series_ticker") or "") or {}
+    price, kind = _price_or_none(market)
+    volume_24h = _volume_24h(market)
+    return MarketRecord(
+        venue="kalshi",
+        venue_type="prediction_market",
+        market_id=ticker,
+        title=market.get("title") or "",
+        category=(info.get("category") or event.get("category") or ""),
+        close_time=market.get("close_time") or market.get("expiration_time") or "",
+        outcomes=(outcome("Yes", price),),
+        price=price,
+        price_kind=kind,
+        volume=_volume(market),
+        volume_24h=volume_24h,
+        traded_24h=None if volume_24h is None else volume_24h > 0,
+        updated_at=market.get("updated_time") or "",
+        # Kalshi publishes no trade time: price_as_of stays empty and
+        # freshness is inferred from volume_24h (see freshness.py).
+        price_as_of=None,
+        as_of_kind="none",
+        url=market_url(info, market["event_ticker"]) if info else f"{SITE}/markets/{ticker}",
+        rule_text=rules_text(market),
+        status=market.get("status") or "",
+        event_ref=market.get("event_ticker") or "",
+        fetched_at=fetched_at or now_iso(),
+    )
+
+
+def parse_price(raw: dict) -> MarketRecord | None:
+    """A price-only row for the 30 minute refresh."""
+    market = raw.get("market", raw)
+    ticker = market.get("ticker") or ""
+    if not ticker:
+        return None
+    price, kind = _price_or_none(market)
+    volume_24h = _volume_24h(market)
+    return MarketRecord(
+        venue="kalshi",
+        venue_type="prediction_market",
+        market_id=ticker,
+        price=price,
+        price_kind=kind,
+        volume=_volume(market),
+        volume_24h=volume_24h,
+        traded_24h=None if volume_24h is None else volume_24h > 0,
+        updated_at=market.get("updated_time") or "",
+        status=market.get("status") or "",
+        fetched_at=now_iso(),
+    )
+
+
+def _bulk(url: str, **params):
+    """A catalog/price call: the venue rate limiter is the pacing, not a sleep."""
+    return get_json(url, pause=0.0, **params)
+
+
+def _price_or_none(market: dict) -> tuple[float | None, str]:
+    """Last trade in points, else the bid/ask midpoint, else nothing."""
+    try:
+        return _price(market, market.get("ticker") or "")
+    except ValueError:
+        return None, ""
 
 
 def fetch_market(ticker: str, *, max_age: int = DEFAULT_MAX_AGE) -> dict:
@@ -142,6 +334,7 @@ def _dollars(value) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
 
 
 if __name__ == "__main__":

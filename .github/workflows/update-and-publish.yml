@@ -1,7 +1,15 @@
 name: Update Spread and publish
 
 # Spread is a live comparison, so the loop is: check the tests, refresh the
-# prices, rebuild site/data.json, publish site/ to GitHub Pages.
+# prices, rebuild site/data.json and the exported JSON under data/, publish
+# both to GitHub Pages.
+#
+# Two cadences, because the two halves of the data move at different speeds.
+# The 6 hour pass lists the whole catalog (roughly 175,000 open markets), which
+# is minutes of paginated requests and a full rematch; the 30 minute pass only
+# re-prices, rebuilds the matched events and rewrites home.json. Rebuilding the
+# catalog shards and the token index every half hour would spend bandwidth on
+# data that barely moved, so it is left to the 6 hourly run that owns it.
 #
 # Rate limits and terms
 # ---------------------
@@ -22,8 +30,14 @@ name: Update Spread and publish
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 */6 * * *"   # the full pass: catalog shards, matching, search index
+    - cron: "*/30 * * * *"  # the prices-only pass: events, home.json, snapshots
   workflow_dispatch:
+    inputs:
+      full:
+        description: "Run the full pass (catalog shards and search index)"
+        type: boolean
+        default: false
 
 # The price database is a single file, so two runs must never overlap.
 concurrency:
@@ -70,15 +84,29 @@ jobs:
             spread-data-
 
       - name: Refresh prices and rebuild the export
-        run: python run_all.py
+        env:
+          # The 6 hourly cron, or a manual "full" dispatch, is the only thing
+          # that may rebuild the catalog shards and the search index.
+          FULL: ${{ github.event.schedule == '0 */6 * * *' || github.event.inputs.full == 'true' }}
+        run: |
+          if [ "$FULL" = "true" ]; then
+            python run_all.py
+          else
+            python run_all.py --prices-only
+          fi
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      # site/ is the curated page; data/ is the exported catalog, search index
+      # and per-event files the wide site reads. Both are published, so the
+      # 6 hourly job's shards and the 30 minute job's home.json are both live.
       - name: Upload the site
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: |
+            site
+            data
 
   deploy:
     needs: update

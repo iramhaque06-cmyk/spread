@@ -3,13 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="site/assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="site/assets/favicon.ico" sizes="any">
 <title>Economic event price gaps</title>
 <style>
 :root { color-scheme: light dark; }
-body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 70rem;
+body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 78rem;
        padding: 0 1rem; color: #16181d; background: #fbfbfd; }
 h1 { font-size: 1.4rem; margin-bottom: .2rem; }
 p.sub { margin-top: 0; color: #5b6170; }
+p.note { color: #3d4350; font-size: .88rem; }
 table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; }
 th, td { border: 1px solid #d7dae2; padding: .6rem .7rem; text-align: left;
          vertical-align: top; }
@@ -22,31 +25,94 @@ thead th { background: #eef0f5; font-size: .85rem; text-transform: uppercase;
 .price { font-size: 1.35rem; font-weight: 700; }
 .gap { font-size: 1.2rem; font-weight: 700; }
 .muted, .none { color: #5b6170; font-size: .85rem; display: block; }
+.rule { display: block; font-size: .85rem; margin-bottom: .3rem; }
+.stale-tag { display: inline-block; font-size: .7rem; font-weight: 700;
+             text-transform: uppercase; letter-spacing: .05em; background: #b02a2a;
+             color: #fff; border-radius: .3rem; padding: .1rem .4rem; }
+.flag { display: inline-block; font-size: .7rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: .05em; background: #a35b00;
+        color: #fff; border-radius: .3rem; padding: .1rem .4rem; }
+.same { display: inline-block; font-size: .7rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: .05em; background: #217a4b;
+        color: #fff; border-radius: .3rem; padding: .1rem .4rem; }
+td.venue.stale { background: #f1f2f6; }
+td.venue.stale .price { color: #9096a3; font-weight: 500; }
+td.venue.stale .source { background: #9096a3; }
+td.gap .none { color: #7b5a00; }
+button.sort { font: inherit; font-weight: 700; color: inherit; background: none;
+              border: 0; padding: 0; cursor: pointer; letter-spacing: inherit;
+              text-transform: inherit; text-decoration: underline dotted; }
+button.sort[hidden] { display: none; }
 a { color: #2b5bd7; }
 .notices li { margin-bottom: .35rem; }
+details summary { cursor: pointer; font-size: .82rem; color: #5b6170; }
+details p { margin: .4rem 0; }
 @media (prefers-color-scheme: dark) {
   body { color: #e7e9ee; background: #14161b; }
   th, td { border-color: #333845; }
   thead th { background: #1d212a; }
   .muted, .none { color: #9aa1b1; }
+  p.note { color: #b8bec9; }
+  td.venue.stale { background: #191c22; }
+  td.venue.stale .price { color: #6f7684; }
+  td.gap .none { color: #d9b26a; }
 }
 </style>
 </head>
 <body>
 <h1>Economic event price gaps</h1>
 <p class="sub">Prices for the same real-world event on two prediction markets,
-generated 2026-10-06T00:46:21+00:00.</p>
-<table>
+generated 2026-10-07T00:51:40+00:00.</p>
+<p class="note">Data source: live API calls only, read-only and with no accounts or keys - Kalshi trade-api v2 and Polymarket&#x27;s Gamma and CLOB APIs. No sample or fixture data appears on this page; the JSON under tests/fixtures is used only by the offline unit tests.</p>
+<p class="note">Live fetches: oldest 2026-10-07T00:51:30+00:00 (0 min ago), newest 2026-10-07T00:51:40+00:00 (0 min ago).</p>
+<p class="note">Freshness: a price older than 24 hours is greyed out, tagged stale and dropped from the gap, so a comparison always uses prices the venues can show to be current. Neither venue publishes a plain last-trade time. Kalshi publishes none at all, so its freshness comes from 24 hour traded volume - any trade in that window means the last trade, and so the last trade price, is inside it. The stamp Kalshi does publish is when it last changed the market record, which sat 130.8 hours old on a market that had traded 109,329 contracts in a day, so it is shown but never used to judge age. Polymarket&#x27;s Gamma &#x27;updated&#x27; field is a batch stamp shared by whole sets of markets; its per-market last price change comes from the public CLOB price history instead. A price that cannot be shown to be fresh counts as stale.</p>
+<table id="gaps">
 <thead><tr>
   <th scope="col">Event</th>
   <th scope="col">Kalshi</th>
   <th scope="col">Polymarket</th>
-  <th scope="col">Gap</th>
+  <th scope="col">Gap
+    <button id="sort-gap" class="sort" type="button" aria-sort="descending"
+            title="Sort by the size of the gap, biggest first" hidden>sort ▼</button>
+  </th>
+  <th scope="col">Resolution rules</th>
 </tr></thead>
 <tbody>
-<tr><td class="event"><b>US CPI, month-over-month, September 2026</b><span class="muted">cpi-2026-09</span></td><td><span class="source">Kalshi</span> <span class="price">4.0¢</span> <span class="muted">last trade</span><span class="muted">Kalshi volume: 14,649</span><span class="muted">Kalshi updated: 2026-09-17T15:30:00.161591Z</span><a href="https://kalshi.com/markets/kxcpi/cpi/kxcpi-26sep" target="_blank" rel="noopener">Kalshi market</a></td><td><span class="source">Polymarket</span> <span class="price">1.8¢</span> <span class="muted">last trade</span><span class="muted">Polymarket volume: 2,947</span><span class="muted">Polymarket updated: 2026-10-06T00:42:18.724833Z</span><a href="https://polymarket.com/event/september-inflation-us-monthly/will-monthly-inflation-increase-by-0pt8-or-more-in-september-2026" target="_blank" rel="noopener">Polymarket market</a></td><td><span class="gap">+2.2 points</span><span class="muted">Kalshi − Polymarket</span></td></tr>
-<tr><td class="event"><b>Fed decision, October 2026 meeting</b><span class="muted">fed-2026-10</span></td><td><span class="source">Kalshi</span> <span class="price">80.0¢</span> <span class="muted">last trade</span><span class="muted">Kalshi volume: 3,400,672</span><span class="muted">Kalshi updated: 2026-09-30T18:52:10.739024Z</span><a href="https://kalshi.com/markets/kxfeddecision/fed-meeting/kxfeddecision-26oct" target="_blank" rel="noopener">Kalshi market</a></td><td><span class="source">Polymarket</span> <span class="price">81.0¢</span> <span class="muted">last trade</span><span class="muted">Polymarket volume: 7,586,827</span><span class="muted">Polymarket updated: 2026-10-06T00:42:18.724833Z</span><a href="https://polymarket.com/event/fed-decision-in-october-20260617190323537/will-there-be-no-change-in-fed-interest-rates-after-the-october-2026-meeting-20260617190324031" target="_blank" rel="noopener">Polymarket market</a></td><td><span class="gap">-1.0 points</span><span class="muted">Kalshi − Polymarket</span></td></tr>
-<tr><td class="event"><b>US nonfarm payrolls, October 2026</b><span class="muted">payrolls-2026-10</span></td><td><span class="source">Kalshi</span> <span class="price">25.0¢</span> <span class="muted">last trade</span><span class="muted">Kalshi volume: 186</span><span class="muted">Kalshi updated: 2026-07-02T15:15:48.340518Z</span><a href="https://kalshi.com/markets/kxpayrolls/jobs-numbers/kxpayrolls-26oct" target="_blank" rel="noopener">Kalshi market</a></td><td><span class="source">Polymarket</span> <span class="price">31.0¢</span> <span class="muted">last trade</span><span class="muted">Polymarket volume: 2,258</span><span class="muted">Polymarket updated: 2026-10-06T00:38:19.978738Z</span><a href="https://polymarket.com/event/how-many-jobs-added-in-october-2026/will-the-us-add-at-least-100k-jobs-in-october-2026" target="_blank" rel="noopener">Polymarket market</a></td><td><span class="gap">-6.0 points</span><span class="muted">Kalshi − Polymarket</span></td></tr>
+<tr data-key="payrolls-2026-10" data-gap="4.00"><td class="event"><b>US nonfarm payrolls, October 2026</b><span class="muted">payrolls-2026-10</span></td><td class="venue"><span class="source">Kalshi</span> <span class="price">27.0¢</span> <span class="muted">last trade</span><span class="muted">Kalshi volume: 517</span><span class="muted">Kalshi traded 24h: 330</span><span class="muted">Kalshi price age: traded in the last 24 hours (330 contracts)</span><span class="muted">Kalshi price as of: — (no trade time published by this venue)</span><span class="muted">Kalshi updated: 2026-07-02T15:15:48.340518Z (when Kalshi last changed this market record, not a trade time)</span><span class="muted">Kalshi fetched: 2026-10-07T00:51:38+00:00 (0 min)</span><a href="https://kalshi.com/markets/kxpayrolls/jobs-numbers/kxpayrolls-26oct" target="_blank" rel="noopener">Kalshi market</a></td><td class="venue"><span class="source">Polymarket</span> <span class="price">23.0¢</span> <span class="muted">last trade</span><span class="muted">Polymarket volume: 5,139</span><span class="muted">Polymarket traded 24h: 2,881</span><span class="muted">Polymarket price age: price last moved 1 min ago, from its last price change</span><span class="muted">Polymarket price as of: 2026-10-07T00:50:22+00:00 (last price change, from the venue&#x27;s public price history)</span><span class="muted">Polymarket updated: 2026-10-07T00:50:11.939681Z (Gamma batch stamp, shared by many markets, not a trade time)</span><span class="muted">Polymarket fetched: 2026-10-07T00:51:40+00:00 (0 min)</span><a href="https://polymarket.com/event/how-many-jobs-added-in-october-2026/will-the-us-add-at-least-100k-jobs-in-october-2026" target="_blank" rel="noopener">Polymarket market</a></td><td class="gap"><span class="gap">+4.0 points</span><span class="muted">Kalshi − Polymarket</span></td><td class="rules"><span class="rule"><span class="source">Kalshi</span> Yes if the BLS October 2026 Employment Situation reports nonfarm payroll growth above 100,000.</span><span class="rule"><span class="source">Polymarket</span> Yes if the BLS October 2026 report shows at least 100,000 jobs added, with values falling between brackets resolving to the higher one.</span><span class="flag">resolution rules differ</span><span class="muted">Same BLS release, but the threshold differs at exactly 100,000: Kalshi needs growth strictly above it, while Polymarket accepts it and sends values between brackets to the higher one.</span><details><summary>full rules from each venue</summary><p class="muted"><b>Kalshi rule text, verbatim from the API</b><br>If the increase in total non-farm payroll employment is above 100000 as reported by the Bureau of Labor Statistics Monthly Employment Situation Report for the month of October 2026, then the market resolves to Yes.
+
+The market closes at 8:29 AM ET on the expected date of the data release.</p><p class="muted"><b>Polymarket rule text, verbatim from the API</b><br>This market will resolve according to the change in the total nonfarm payroll employment reported by the BLS &quot;Employment Situation Summary&quot; for October 2026, scheduled to be released on November 6, 2026, at 8:30 AM ET.
+
+If the reported value falls exactly between two brackets, then this market will resolve to the higher range bracket.
+
+If no data for the specified month is released by the date the next month&#x27;s data is scheduled to be released, this market will resolve based on data from the last available month.
+
+The BLS &quot;Employment Situation Summary&quot; may be found here: https://www.bls.gov/bls/newsrels.htm</p></details></td></tr>
+<tr data-key="cpi-2026-09" data-gap="1.20"><td class="event"><b>US CPI, month-over-month, September 2026</b><span class="muted">cpi-2026-09</span></td><td class="venue"><span class="source">Kalshi</span> <span class="price">3.0¢</span> <span class="muted">last trade</span><span class="muted">Kalshi volume: 15,206</span><span class="muted">Kalshi traded 24h: 556</span><span class="muted">Kalshi price age: traded in the last 24 hours (556 contracts)</span><span class="muted">Kalshi price as of: — (no trade time published by this venue)</span><span class="muted">Kalshi updated: 2026-09-17T15:30:00.161591Z (when Kalshi last changed this market record, not a trade time)</span><span class="muted">Kalshi fetched: 2026-10-07T00:51:34+00:00 (0 min)</span><a href="https://kalshi.com/markets/kxcpi/cpi/kxcpi-26sep" target="_blank" rel="noopener">Kalshi market</a></td><td class="venue"><span class="source">Polymarket</span> <span class="price">1.8¢</span> <span class="muted">last trade</span><span class="muted">Polymarket volume: 2,947</span><span class="muted">Polymarket price age: price last moved 0 min ago, from its last price change</span><span class="muted">Polymarket price as of: 2026-10-07T00:51:21+00:00 (last price change, from the venue&#x27;s public price history)</span><span class="muted">Polymarket updated: 2026-10-07T00:50:11.939681Z (Gamma batch stamp, shared by many markets, not a trade time)</span><span class="muted">Polymarket fetched: 2026-10-07T00:51:36+00:00 (0 min)</span><a href="https://polymarket.com/event/september-inflation-us-monthly/will-monthly-inflation-increase-by-0pt8-or-more-in-september-2026" target="_blank" rel="noopener">Polymarket market</a></td><td class="gap"><span class="gap">+1.2 points</span><span class="muted">Kalshi − Polymarket</span></td><td class="rules"><span class="rule"><span class="source">Kalshi</span> Yes if BLS reports September 2026 CPI up more than 0.7% month-over-month, quoted to one decimal.</span><span class="rule"><span class="source">Polymarket</span> Yes if the seasonally adjusted CPI-U one-month change for September 2026 is 0.8% or more, at one-decimal precision.</span><span class="flag">resolution rules differ</span><span class="muted">Same BLS report and the same one-decimal scale, on which &#x27;more than 0.7%&#x27; and &#x27;0.8% or more&#x27; cut at the same place; they differ on which series has to clear it - Polymarket names the seasonally adjusted CPI-U, while Kalshi&#x27;s rule says only &#x27;the Consumer Price Index&#x27; and leaves the adjustment unstated.</span><details><summary>full rules from each venue</summary><p class="muted"><b>Kalshi rule text, verbatim from the API</b><br>If the Consumer Price Index (CPI) increases by more than 0.7% (single-decimal) in September 2026, then the market resolves to Yes.
+
+The market will always close at 8:25 AM ET on the scheduled day of the data release (October 14, 2026). Please note: the Expiration Value is the single-decimal value published at the Source Agency. In the case of a delay in data caused by a federal government shutdown impacting the reliability of the Source Agency, the market’s latest Expiration Date will be extended to the sooner of the release of the Underlying or six months after the end of the government shutdown.</p><p class="muted"><b>Polymarket rule text, verbatim from the API</b><br>This is a market about the one-month percent change in the seasonally adjusted Consumer Price Index for All Urban Consumers (CPI-U) published by the Bureau of Labor Statistics (BLS).
+
+This market will resolve to the one-month percent change in the seasonally adjusted Consumer Price Index for All Urban Consumers (CPI-U) in September 2026 according to the monthly BLS report.
+
+The resolution source for this market will be the BLS Consumer Price Index report released for September 2026 (https://www.bls.gov/bls/news-release/cpi.htm), currently scheduled to be released on October 14, 2026, at 8:30 AM ET. Resolution of this market will take place upon release of the aforementioned data.
+
+Note: the resolution source for this market will be the official monthly Consumer Price Index for All Urban Consumers (CPI-U) which BLS reports to one decimal point (e.g. 0.4%). Thus, this is the level of precision that will be used when resolving the market.
+
+If the BLS does not release the relevant figures on the scheduled date, this market may remain open up until the scheduled release time of the next CPI report (https://www.bls.gov/schedule). If the information is not released by that time, this market will resolve according to the figures of the most recent previous month with available data.</p></details></td></tr>
+<tr data-key="fed-2026-10" data-gap="0.00"><td class="event"><b>Fed decision, October 2026 meeting</b><span class="muted">fed-2026-10</span></td><td class="venue"><span class="source">Kalshi</span> <span class="price">84.0¢</span> <span class="muted">last trade</span><span class="muted">Kalshi volume: 3,542,267</span><span class="muted">Kalshi traded 24h: 141,534</span><span class="muted">Kalshi price age: traded in the last 24 hours (141,534 contracts)</span><span class="muted">Kalshi price as of: — (no trade time published by this venue)</span><span class="muted">Kalshi updated: 2026-09-30T18:52:10.739024Z (when Kalshi last changed this market record, not a trade time)</span><span class="muted">Kalshi fetched: 2026-10-07T00:51:30+00:00 (0 min)</span><a href="https://kalshi.com/markets/kxfeddecision/fed-meeting/kxfeddecision-26oct" target="_blank" rel="noopener">Kalshi market</a></td><td class="venue"><span class="source">Polymarket</span> <span class="price">84.0¢</span> <span class="muted">last trade</span><span class="muted">Polymarket volume: 7,713,819</span><span class="muted">Polymarket traded 24h: 126,992</span><span class="muted">Polymarket price age: price last moved 5 min ago, from its last price change</span><span class="muted">Polymarket price as of: 2026-10-07T00:46:19+00:00 (last price change, from the venue&#x27;s public price history)</span><span class="muted">Polymarket updated: 2026-10-07T00:48:14.359843Z (Gamma batch stamp, shared by many markets, not a trade time)</span><span class="muted">Polymarket fetched: 2026-10-07T00:51:32+00:00 (0 min)</span><a href="https://polymarket.com/event/fed-decision-in-october-20260617190323537/will-there-be-no-change-in-fed-interest-rates-after-the-october-2026-meeting-20260617190324031" target="_blank" rel="noopener">Polymarket market</a></td><td class="gap"><span class="gap">+0.0 points</span><span class="muted">Kalshi − Polymarket</span></td><td class="rules"><span class="rule"><span class="source">Kalshi</span> Yes if the Fed hikes by 0 bps at the October 28, 2026 meeting, per the FOMC statement.</span><span class="rule"><span class="source">Polymarket</span> Yes if the upper bound of the target fed funds range is unchanged after the October 27-28, 2026 FOMC meeting.</span><span class="same">same resolution rule</span><span class="muted">Both resolve from the same FOMC statement, so Kalshi&#x27;s 0 bps bucket and Polymarket&#x27;s &#x27;no change&#x27; bracket settle together.</span><details><summary>full rules from each venue</summary><p class="muted"><b>Kalshi rule text, verbatim from the API</b><br>If the Federal Reserve does a Hike of 0bps on October 28, 2026, then the market resolves to Yes.
+
+The outcomes are mutually exclusive: at most one can resolve to Yes. For example, a 50-basis-point hike resolves “Hike   25 bps” to Yes and “Hike 25 bps” to No.
+
+If the scheduled FOMC meeting is canceled and does not occur on its scheduled date, “Fed maintains rate” resolves to Yes and all other outcomes resolve to No.</p><p class="muted"><b>Polymarket rule text, verbatim from the API</b><br>The FED interest rates are defined in this market by the upper bound of the target federal funds range. The decisions on the target federal funds range are made by the Federal Open Market Committee (FOMC) meetings.
+
+This market will resolve to the amount of basis points the upper bound of the target federal funds rate is changed by versus the level it was prior to the Federal Reserve&#x27;s October 2026 meeting.
+
+If the target federal funds rate is changed to a level not expressed in the displayed options, the change will be rounded up to the nearest 25 and will resolve to the relevant bracket. (e.g. if there&#x27;s a cut/increase of 12.5 bps it will be considered to be 25 bps)
+
+The resolution source for this market is the FOMC’s statement after its meeting scheduled for October 27-28, 2026 according to the official calendar: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm.
+
+The level and change of the target federal funds rate is also published at the official website of the Federal Reserve at https://www.federalreserve.gov/monetarypolicy/openmarket.htm.
+
+This market may resolve as soon as the FOMC’s statement for their October meeting with relevant data is issued. If no statement is released by the end date of the next scheduled meeting, this market will resolve to the &quot;No change&quot; bracket.</p></details></td></tr>
 </tbody>
 </table>
 <ul class="notices">
@@ -54,5 +120,40 @@ generated 2026-10-06T00:46:21+00:00.</p>
   <li>Informational only. Nothing here is financial advice, a recommendation, or an offer to buy or sell anything.</li>
   <li><b>18+ only. Prediction markets involve risk of loss.</b></li>
 </ul>
+<script>
+(function () {
+  var body = document.querySelector("#gaps tbody");
+  var button = document.getElementById("sort-gap");
+  if (!body || !button) { return; }
+  var direction = -1;
+  var rows = function () { return Array.prototype.slice.call(body.querySelectorAll("tr")); };
+  var gapOf = function (row) { return Number(row.getAttribute("data-gap")); };
+  var keyOf = function (row) { return row.getAttribute("data-key") || ""; };
+
+  function apply() {
+    var ranked = [], pinned = [];
+    rows().forEach(function (row) {
+      var gap = row.getAttribute("data-gap");
+      (gap !== "" && isFinite(Number(gap)) ? ranked : pinned).push(row);
+    });
+    ranked.sort(function (a, b) {
+      var delta = Math.abs(gapOf(a)) - Math.abs(gapOf(b));
+      if (delta !== 0) { return direction * delta; }
+      return keyOf(a) < keyOf(b) ? -1 : 1;
+    });
+    pinned.sort(function (a, b) { return keyOf(a) < keyOf(b) ? -1 : 1; });
+    ranked.concat(pinned).forEach(function (row) { body.appendChild(row); });
+  }
+
+  button.hidden = false;
+  button.setAttribute("aria-sort", direction < 0 ? "descending" : "ascending");    button.addEventListener("click", function () {
+    direction = -direction;
+    button.setAttribute("aria-sort", direction < 0 ? "descending" : "ascending");
+    button.textContent = direction < 0 ? "sort ▼" : "sort ▲";
+    apply();
+  });
+  apply();
+})();
+</script>
 </body>
 </html>

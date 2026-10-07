@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Every tracked economic event priced on two prediction markets, with the gap between them. Informational only.">
+<title>Markets — Spread</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/spread-icon-512.png">
+<link rel="stylesheet" href="styles/tokens.css">
+<link rel="stylesheet" href="styles/base.css">
+<link rel="stylesheet" href="styles/markets.css">
+</head>
+<body data-page="markets">
+<main class="content" id="page">
+  <header class="markets-head">
+    <h1 class="headline">Markets</h1>
+    <p class="subhead">
+      Every event this prototype tracks, priced on both venues. Prices older than
+      24 hours are marked stale and left out of the gap.
+    </p>
+  </header>
+  <div id="markets-toolbar"></div>
+  <p class="label markets-count" id="markets-count"></p>
+  <div id="markets-grid"></div>
+  <div id="markets-pager"></div>
+</main>
+<script src="app.js"></script>
+<script src="pages/markets.js"></script>
+</body>
+</html>

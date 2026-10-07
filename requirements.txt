@@ -1,0 +1,4 @@
+# The two libraries this prototype uses, and nothing else (see CLAUDE.md).
+# Pinned to the versions the pipeline is developed and tested against.
+requests==2.32.4
+rapidfuzz==3.14.5

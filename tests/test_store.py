@@ -124,6 +124,133 @@ class StoreRoundTripTest(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             store.upsert_observation(self.conn, "no-such-event", kalshi_quote)
 
+    def test_price_timestamps_volumes_and_rule_text_round_trip(self):
+        kalshi_quote, polymarket_quote = fed_quotes()
+        store.upsert_observation(self.conn, EVENT_KEY, kalshi_quote)
+        store.upsert_observation(
+            self.conn,
+            EVENT_KEY,
+            replace(
+                polymarket_quote,
+                price_as_of="2026-10-06T05:35:14+00:00",
+                price_as_of_kind="last_price_change",
+                traded_24h=True,
+                volume_24h=326_528,
+                fetched_at="2026-10-06T05:40:00+00:00",
+                rules_text="resolution rules, verbatim",
+            ),
+        )
+
+        rows = {row["venue"]: row for row in store.read_observations(self.conn)}
+        self.assertEqual(rows["polymarket"]["price_as_of"], "2026-10-06T05:35:14+00:00")
+        self.assertEqual(
+            rows["polymarket"]["price_as_of_kind"], "last_price_change"
+        )
+        self.assertIs(rows["polymarket"]["traded_24h"], True)
+        self.assertEqual(rows["polymarket"]["volume_24h"], 326_528)
+        self.assertEqual(rows["polymarket"]["rules_text"], "resolution rules, verbatim")
+
+    def test_unknown_volume_stays_unknown_rather_than_zero(self):
+        kalshi_quote, _ = fed_quotes()
+        store.upsert_observation(
+            self.conn,
+            EVENT_KEY,
+            replace(kalshi_quote, traded_24h=None, volume_24h=None),
+        )
+        [row] = store.read_observations(self.conn)
+        self.assertIsNone(row["traded_24h"])
+        self.assertIsNone(row["volume_24h"])
+
+    def test_fetch_time_falls_back_to_when_the_row_was_recorded(self):
+        kalshi_quote, _ = fed_quotes()
+        store.upsert_observation(
+            self.conn,
+            EVENT_KEY,
+            replace(kalshi_quote, fetched_at=""),
+            recorded_at="2026-10-05T00:00:00+00:00",
+        )
+        [row] = store.read_observations(self.conn)
+        self.assertEqual(row["fetched_at"], "2026-10-05T00:00:00+00:00")
+
+    def test_event_rule_summaries_are_stored_and_read_back(self):
+        store.upsert_event(
+            self.conn,
+            EVENT_KEY,
+            EVENT_TITLE,
+            kalshi_rule="Yes if the number is above 1.",
+            polymarket_rule="Yes if the number is at least 1.",
+            rules_differ=True,
+            rules_note="the boundary differs",
+        )
+        store.upsert_observation(self.conn, EVENT_KEY, fed_quotes()[0])
+
+        [row] = store.read_observations(self.conn)
+        self.assertEqual(row["event_kalshi_rule"], "Yes if the number is above 1.")
+        self.assertEqual(
+            row["event_polymarket_rule"], "Yes if the number is at least 1."
+        )
+        self.assertIs(row["event_rules_differ"], True)
+        self.assertEqual(row["event_rules_note"], "the boundary differs")
+
+
+class MigrationTest(unittest.TestCase):
+    """An older spread.db keeps working: columns are added, rows are kept."""
+
+    OLD_SCHEMA = """
+        CREATE TABLE events (event_key TEXT PRIMARY KEY, title TEXT NOT NULL);
+        CREATE TABLE observations (
+            event_key    TEXT NOT NULL REFERENCES events(event_key),
+            venue        TEXT NOT NULL,
+            market_id    TEXT NOT NULL,
+            title        TEXT NOT NULL,
+            price_cents  REAL NOT NULL,
+            price_kind   TEXT NOT NULL,
+            volume       INTEGER,
+            url          TEXT NOT NULL,
+            last_updated TEXT NOT NULL,
+            status       TEXT NOT NULL,
+            recorded_at  TEXT NOT NULL,
+            PRIMARY KEY (event_key, venue)
+        );
+    """
+
+    def test_an_old_database_is_migrated_without_losing_rows(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "old.db"
+
+        old = sqlite3.connect(path)
+        old.executescript(self.OLD_SCHEMA)
+        old.execute("INSERT INTO events VALUES (?, ?)", (EVENT_KEY, EVENT_TITLE))
+        old.execute(
+            "INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                EVENT_KEY,
+                "kalshi",
+                "KXTEST",
+                "an old row",
+                42.0,
+                "last",
+                7,
+                "https://example.test/market",
+                "2026-01-01T00:00:00Z",
+                "active",
+                "2026-01-01T00:00:01Z",
+            ),
+        )
+        old.commit()
+        old.close()
+
+        conn = store.connect(path)
+        self.addCleanup(conn.close)
+        [row] = store.read_observations(conn)
+        self.assertEqual(row["market_id"], "KXTEST")
+        self.assertEqual(row["price_cents"], 42.0)
+        self.assertIsNone(row["price_as_of"])
+        self.assertIsNone(row["traded_24h"])
+        self.assertEqual(row["price_as_of_kind"], "none")
+        self.assertIs(row["event_rules_differ"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

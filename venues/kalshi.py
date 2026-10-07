@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from . import DEFAULT_MAX_AGE, Quote, get_json
+from . import DEFAULT_MAX_AGE, Quote, get_json, now_iso
 
 API = "https://api.elections.kalshi.com/trade-api/v2"
 SITE = "https://kalshi.com"
@@ -39,18 +39,25 @@ def fetch_quote(ticker: str, *, max_age: int = DEFAULT_MAX_AGE) -> Quote:
     market = fetch_market(ticker, max_age=max_age)
     event = fetch_event(market["event_ticker"], max_age=max_age)
     series = fetch_series(event["series_ticker"])
-    return parse_market(market, series=series)
+    return parse_market(market, series=series, fetched_at=now_iso())
 
 
-def parse_market(raw: dict, *, series: dict) -> Quote:
+def parse_market(raw: dict, *, series: dict, fetched_at: str = "") -> Quote:
     """Turn a raw Kalshi market record into a :class:`Quote`.
 
     ``raw`` may be the bare market object or the ``{"market": ...}``
     response body. Prices arrive in dollars and are normalized to cents.
+
+    Kalshi publishes no trade time, so ``price_as_of`` stays empty and
+    freshness is decided from ``volume_24h`` instead; ``updated_time`` is
+    stored in ``last_updated`` and labelled on the page as the record's own
+    stamp, which it is (it sat 130.8 hours old on a market that had traded
+    109,329 contracts in the last day).
     """
     market = raw.get("market", raw)
     ticker = market["ticker"]
     price_cents, price_kind = _price(market, ticker)
+    volume_24h = _volume_24h(market)
     return Quote(
         venue="kalshi",
         market_id=ticker,
@@ -61,7 +68,23 @@ def parse_market(raw: dict, *, series: dict) -> Quote:
         url=market_url(series, market["event_ticker"]),
         last_updated=market.get("updated_time") or "",
         status=market.get("status") or "",
+        price_as_of=None,
+        price_as_of_kind="none",
+        traded_24h=None if volume_24h is None else volume_24h > 0,
+        volume_24h=volume_24h,
+        fetched_at=fetched_at,
+        rules_text=rules_text(market),
+        resolves_at=market.get("close_time") or market.get("expiration_time") or "",
     )
+
+
+def rules_text(market: dict) -> str:
+    """Kalshi's own resolution rule, verbatim, primary then secondary."""
+    parts = [
+        str(market.get("rules_primary") or "").strip(),
+        str(market.get("rules_secondary") or "").strip(),
+    ]
+    return "\n\n".join(part for part in parts if part)
 
 
 def market_url(series: dict, event_ticker: str) -> str:
@@ -96,6 +119,20 @@ def _volume(market: dict) -> int | None:
     value = market.get("volume")
     if value is None:
         value = market.get("volume_fp")
+    if value in (None, ""):
+        return None
+    return int(float(value))
+
+
+def _volume_24h(market: dict) -> int | None:
+    """Contracts traded in the trailing 24 hours - Kalshi's only trade clock.
+
+    Non-zero means a contract traded inside the window, so the last trade (and
+    the last trade price) is inside it too.
+    """
+    value = market.get("volume_24h")
+    if value is None:
+        value = market.get("volume_24h_fp")
     if value in (None, ""):
         return None
     return int(float(value))

@@ -6,7 +6,16 @@ curating; nothing it returns is ever written back automatically.
 
 The spread is always **Kalshi cents minus Polymarket cents**, and is
 ``None`` whenever either side is missing, so a one-sided event can never
-masquerade as a zero gap.
+masquerade as a zero gap. It is also ``None`` whenever either side's price
+is stale: :func:`gap_for_pair` refuses to compare a price the venues cannot
+show to be fresher than 24 hours old.
+
+Each entry also carries a hand-checked one-line summary of both venues'
+resolution rules and a ``rules_differ`` flag, because two markets that look
+like the same event can still settle on different numbers. :func:`rule_drift`
+re-checks the curated wording against the rule text the venues are serving
+right now, so a rule change shows up as a warning instead of as a silently
+wrong page.
 """
 
 from __future__ import annotations
@@ -20,11 +29,25 @@ from typing import Iterable
 import requests
 from rapidfuzz import fuzz, process
 
+import freshness
 from venues import DEFAULT_MAX_AGE, Quote, kalshi, polymarket
 
 MAPPING_PATH = Path(__file__).resolve().parent / "mapping.json"
 VENUES = ("kalshi", "polymarket")
-FIELDS = ("event_key", "title", "kalshi", "polymarket", "note")
+FIELDS = (
+    "event_key",
+    "title",
+    "category",
+    "kalshi",
+    "polymarket",
+    "note",
+    "kalshi_rule",
+    "polymarket_rule",
+    "rules_differ",
+    "rules_note",
+    "kalshi_rule_terms",
+    "polymarket_rule_terms",
+)
 
 FETCHERS = {"kalshi": kalshi.fetch_quote, "polymarket": polymarket.fetch_quote}
 
@@ -37,6 +60,7 @@ class EventPair:
     title: str
     quotes: dict  # venue -> Quote | None
     spread_points: float | None  # Kalshi cents - Polymarket cents
+    rule_notes: tuple[str, ...] = ()  # curated rule text the live rules no longer match
 
     @property
     def missing(self) -> tuple[str, ...]:
@@ -63,6 +87,18 @@ def load(path: Path | str = MAPPING_PATH) -> list[dict]:
             raise ValueError(
                 f"mapping entry {number} has unknown fields: {sorted(unknown)}"
             )
+        for venue in VENUES:
+            if entry.get(venue) and not entry.get(f"{venue}_rule"):
+                raise ValueError(
+                    f"mapping entry {number} ({entry.get('event_key')}) names a "
+                    f"{venue} market but has no {venue}_rule one-liner"
+                )
+        if all(entry.get(venue) for venue in VENUES):
+            if not isinstance(entry.get("rules_differ"), bool):
+                raise ValueError(
+                    f"mapping entry {number} ({entry.get('event_key')}) pairs both "
+                    "venues but has no true/false rules_differ"
+                )
     return entries
 
 
@@ -87,7 +123,51 @@ def pair(entry: dict, quotes: dict) -> EventPair:
             kalshi_quote.price_cents if kalshi_quote else None,
             polymarket_quote.price_cents if polymarket_quote else None,
         ),
+        rule_notes=tuple(rule_drift(entry, quotes)),
     )
+
+
+def gap_for_pair(pair: EventPair, *, now=None) -> float | None:
+    """The comparable gap, or ``None`` when a stale price makes it meaningless.
+
+    The arithmetic itself is still :func:`spread_between`; this only decides
+    whether both sides are fresh enough to be worth comparing at all.
+    """
+    for venue in VENUES:
+        quote = pair.quotes.get(venue)
+        if quote is None or not freshness.assess(quote, now=now).fresh:
+            return None
+    return pair.spread_points
+
+
+def rule_drift(entry: dict, quotes: dict) -> list[str]:
+    """Warn when a venue's live rule text no longer contains the curated terms.
+
+    ``{venue}_rule_terms`` names the numbers a curated one-liner turns on -
+    a 0.7%, a 100,000. If the venue stops serving them, the one-liner is out
+    of date and the page must not keep asserting it silently. An entry with
+    no terms is reported as unchecked rather than as verified.
+    """
+    notes = []
+    for venue in VENUES:
+        if not entry.get(venue):
+            continue
+        quote = quotes.get(venue)
+        text = (quote.rules_text if quote else "") or ""
+        terms = entry.get(f"{venue}_rule_terms") or []
+        if not text:
+            notes.append(f"{venue}: no live rule text available to check against")
+            continue
+        if not terms:
+            notes.append(f"{venue}: rule wording is not machine-checked")
+            continue
+        missing = [term for term in terms if term.lower() not in text.lower()]
+        if missing:
+            notes.append(
+                f"{venue}: live rules no longer mention "
+                + ", ".join(repr(term) for term in missing)
+            )
+    return notes
 
 
 def fetch_pairs(

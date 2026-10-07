@@ -1,0 +1,95 @@
+name: Update Spread and publish
+
+# Spread is a live comparison, so the loop is: check the tests, refresh the
+# prices, rebuild site/data.json, publish site/ to GitHub Pages.
+#
+# Rate limits and terms
+# ---------------------
+# Both venues are read-only public endpoints with no key and no account:
+# Kalshi's trade-api v2 and Polymarket's Gamma + CLOB APIs. Every request goes
+# through venues.get_json(), which caches responses under cache/ and pauses
+# 0.5 seconds between real calls. One pass of run_all.py is roughly 70
+# requests spread over about a minute, once every 30 minutes - far inside
+# anything either venue publishes as acceptable polling, and nothing here
+# logs in, places an order, or reads a private endpoint.
+#
+# GitHub's shortest cron interval is five minutes, and scheduled runs are not
+# punctual: a */30 job can start several minutes late, and GitHub disables
+# schedules on repositories that go quiet for 60 days (the "Enable workflow"
+# button in the Actions tab restarts it). Neither is a problem here - the site
+# prints its own generated_at, so a late or missing run is visible on the page
+# rather than hidden.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+# The price database is a single file, so two runs must never overlap.
+concurrency:
+  group: spread-update
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # The whole suite is offline (fixtures and fakes, no network), so it is
+      # cheap enough to run before every publish, and a broken export fails
+      # here instead of going live.
+      - name: Run the tests
+        run: python -m unittest discover -s tests
+
+      # spread.db and cache/ are generated and gitignored. Restoring them lets
+      # CI accumulate the same price history a local checkout has, and lets the
+      # cached responses absorb most of the wider scans' requests. The key is
+      # unique per run so the cache is always written back; restore-keys takes
+      # the newest previous one. Only the default branch is scheduled, so no
+      # fork can seed this cache.
+      - name: Restore price history and response cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            spread.db
+            cache
+          key: spread-data-${{ github.run_id }}
+          restore-keys: |
+            spread-data-
+
+      - name: Refresh prices and rebuild the export
+        run: python run_all.py
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: update
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

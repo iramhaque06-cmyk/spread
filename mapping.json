@@ -2,22 +2,43 @@
   {
     "event_key": "fed-2026-10",
     "title": "Fed decision, October 2026 meeting",
+    "category": "Central bank rates",
     "kalshi": "KXFEDDECISION-26OCT-H0",
     "polymarket": "will-there-be-no-change-in-fed-interest-rates-after-the-october-2026-meeting-20260617190324031",
-    "note": "Kalshi's 0 bps bucket and Polymarket's 'no change' market both price the Fed holding rates at the October 2026 meeting."
+    "note": "Kalshi's 0 bps bucket and Polymarket's 'no change' market both price the Fed holding rates at the October 2026 meeting.",
+    "kalshi_rule": "Yes if the Fed hikes by 0 bps at the October 28, 2026 meeting, per the FOMC statement.",
+    "polymarket_rule": "Yes if the upper bound of the target fed funds range is unchanged after the October 27-28, 2026 FOMC meeting.",
+    "rules_differ": false,
+    "rules_note": "Both resolve from the same FOMC statement, so Kalshi's 0 bps bucket and Polymarket's 'no change' bracket settle together.",
+    "kalshi_rule_terms": ["Federal Reserve", "Hike of 0bps"],
+    "polymarket_rule_terms": ["upper bound", "Federal Open Market Committee"]
   },
   {
     "event_key": "cpi-2026-09",
     "title": "US CPI, month-over-month, September 2026",
+    "category": "Inflation",
     "kalshi": "KXCPI-26SEP-T0.7",
     "polymarket": "will-monthly-inflation-increase-by-0pt8-or-more-in-september-2026",
-    "note": "CPI is published to one decimal, so Kalshi's 'more than 0.7%' is Polymarket's '0.8% or more'. Both settle on the BLS September 2026 CPI release."
+    "note": "CPI is published to one decimal, so Kalshi's 'more than 0.7%' is Polymarket's '0.8% or more'. Both settle on the BLS September 2026 CPI release.",
+    "kalshi_rule": "Yes if BLS reports September 2026 CPI up more than 0.7% month-over-month, quoted to one decimal.",
+    "polymarket_rule": "Yes if the seasonally adjusted CPI-U one-month change for September 2026 is 0.8% or more, at one-decimal precision.",
+    "rules_differ": true,
+    "rules_note": "Same BLS report and the same one-decimal scale, on which 'more than 0.7%' and '0.8% or more' cut at the same place; they differ on which series has to clear it - Polymarket names the seasonally adjusted CPI-U, while Kalshi's rule says only 'the Consumer Price Index' and leaves the adjustment unstated.",
+    "kalshi_rule_terms": ["Consumer Price Index", "0.7%", "single-decimal"],
+    "polymarket_rule_terms": ["seasonally adjusted", "one decimal point"]
   },
   {
     "event_key": "payrolls-2026-10",
     "title": "US nonfarm payrolls, October 2026",
+    "category": "Employment",
     "kalshi": "KXPAYROLLS-26OCT-T100000",
     "polymarket": "will-the-us-add-at-least-100k-jobs-in-october-2026",
-    "note": "Both settle on the BLS Employment Situation report for October 2026; Kalshi says 'above 100000' where Polymarket says 'at least 100k'."
+    "note": "Both settle on the BLS Employment Situation report for October 2026; Kalshi says 'above 100000' where Polymarket says 'at least 100k'.",
+    "kalshi_rule": "Yes if the BLS October 2026 Employment Situation reports nonfarm payroll growth above 100,000.",
+    "polymarket_rule": "Yes if the BLS October 2026 report shows at least 100,000 jobs added, with values falling between brackets resolving to the higher one.",
+    "rules_differ": true,
+    "rules_note": "Same BLS release, but the threshold differs at exactly 100,000: Kalshi needs growth strictly above it, while Polymarket accepts it and sends values between brackets to the higher one.",
+    "kalshi_rule_terms": ["non-farm payroll", "100000"],
+    "polymarket_rule_terms": ["nonfarm payroll", "higher range bracket"]
   }
 ]

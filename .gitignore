@@ -4,5 +4,13 @@ cache/
 __pycache__/
 *.pyc
 
+# Raw API responses saved by `spread.py --dump-raw` (evidence, not source)
+raw_samples/
+
+# Local environment: API keys live here and must never be committed.
+# ODDS_API_KEY is read from the environment by the sportsbook adapter.
+.env
+*.key
+
 # Freebuff workspace metadata (not part of the prototype)
 .freebuff/

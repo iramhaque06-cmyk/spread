@@ -98,6 +98,20 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      # Verify what the step above actually produced, on the files that landed:
+      # the shard size ceilings, a real search through the exported index, and
+      # the per-venue error state. The cadence decides what is expected, since
+      # the 30 minute pass is not asked to write catalog shards at all.
+      - name: Smoke-test the exported data
+        env:
+          FULL: ${{ github.event.schedule == '0 */6 * * *' || github.event.inputs.full == 'true' }}
+        run: |
+          if [ "$FULL" = "true" ]; then
+            python test_smoke.py
+          else
+            python test_smoke.py --prices-only
+          fi
+
       # site/ is the curated page; data/ is the exported catalog, search index
       # and per-event files the wide site reads. Both are published, so the
       # 6 hourly job's shards and the 30 minute job's home.json are both live.

@@ -26,11 +26,6 @@
     return "play_money";
   }
 
-  function shortError(text) {
-    var trimmed = String(text || "").replace(/\s+/g, " ").trim();
-    return trimmed.length > 160 ? trimmed.slice(0, 157) + "…" : trimmed;
-  }
-
   /** A read time, or the words that say it never happened. */
   function readTime(stamp) {
     if (!stamp) {
@@ -67,18 +62,16 @@
       row("Priced", S.esc(S.num(status.priced))) +
       row("Full catalog read", S.esc(readTime(status.last_catalog_ok_at))) +
       row("Prices read", S.esc(readTime(status.last_prices_ok_at)));
-    if (status.errors) {
+    // The provider's own wording stays in the pipeline log. A reader gets the
+    // fact - this venue is not being read - in words, and the "Last run" row
+    // ("listed=0 closed=0 in 0.0s") is gone: a run that did nothing is not a
+    // statistic.
+    var trouble = S.venueTrouble(status);
+    if (trouble) {
       rows +=
-        '<div class="stat-row"><span class="muted">Last error</span>' +
+        '<div class="stat-row"><span class="muted">Last read</span>' +
         '<span class="stat-value muted">' +
-        S.esc(shortError(status.errors)) +
-        "</span></div>";
-    }
-    if (status.notes) {
-      rows +=
-        '<div class="stat-row"><span class="muted">Last run</span>' +
-        '<span class="stat-value muted mono">' +
-        S.esc(shortError(status.notes)) +
+        S.esc(trouble) +
         "</span></div>";
     }
     return (
@@ -114,7 +107,7 @@
         "Last odds call",
         quota.last_call_at ? S.esc(S.timeAgo(quota.last_call_at)) : "never"
       );
-    var why = books && books.errors ? shortError(books.errors) : "";
+    var why = S.venueTrouble(books) || "";
     var standing = books && books.markets
       ? S.num(books.markets) + " bookmaker prices stored"
       : "No sportsbook price is stored right now.";

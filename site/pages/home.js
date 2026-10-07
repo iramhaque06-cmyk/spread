@@ -56,17 +56,32 @@
   function gapsCard(home) {
     var gaps = (home.top_gaps || []).slice(0, 3);
     if (!gaps.length) {
-      return (
-        '<div class="empty"><span class="label">No gap yet</span>' +
-        "<p>No event currently has two fresh real-money prices, so there is nothing to compare. " +
-        "The freshness readout below says when each venue was last read.</p></div>"
-      );
+      return '<p class="muted">No event has two fresh real-money prices to compare right now.</p>';
     }
     var rows = "";
     for (var index = 0; index < gaps.length; index += 1) {
       rows += S.rowHtml(gapRow(gaps[index]));
     }
     return '<ul class="results-list">' + rows + "</ul>";
+  }
+
+  /**
+   * The footnote under gap rows. It annotates the bar, so with no rows there is
+   * nothing to annotate and it is not drawn - otherwise it floats between
+   * sections as a stray line about bars that are not on the page.
+   */
+  function gapLegend(home) {
+    if (!(home.top_gaps || []).length) {
+      return "";
+    }
+    return (
+      '<p class="label label--muted" style="margin-top:16px">Gap ' +
+      S.tip(
+        "Max minus min of fresh real-money prices, in points. One point is one cent of a one-dollar contract.",
+        "How the gap is calculated"
+      ) +
+      " · a stale price is left out of the arithmetic</p>"
+    );
   }
 
   function freshnessCard(home) {
@@ -79,9 +94,12 @@
       var dot = when
         ? '<span class="dot ' + (fresh ? "dot--fresh" : "dot--live") + '" aria-hidden="true"></span> '
         : '<span class="dot dot--muted" aria-hidden="true"></span> ';
+      // One line per venue, as the card promises. A venue that could not be
+      // read says why in place of "not read yet" rather than adding an indented
+      // second row of the provider's own error text.
       var detail = when
         ? S.num(status.priced) + " priced · read " + S.timeAgo(when)
-        : "not read yet";
+        : S.venueTrouble(status) || "not read yet";
       rows +=
         '<div class="stat-row"><span class="row"><span class="mono">' +
         dot +
@@ -91,14 +109,6 @@
         '</span></span><span class="stat-value muted">' +
         S.esc(detail) +
         "</span></div>";
-      if (status.errors) {
-        rows +=
-          '<div class="stat-row"><span class="muted">' +
-          S.esc(shortError(status.errors)) +
-          '</span><span class="stat-value muted">' +
-          S.esc(status.notes || "error") +
-          "</span></div>";
-      }
     }
     var quota = quotaLine(home);
     return (
@@ -117,20 +127,16 @@
         : "play_money";
   }
 
-  function shortError(text) {
-    var trimmed = String(text || "").replace(/\s+/g, " ").trim();
-    return trimmed.length > 90 ? trimmed.slice(0, 87) + "…" : trimmed;
-  }
-
+  /**
+   * The provider's monthly credit count, and only when it has actually been
+   * reported. This used to draw a second row for the sportsbook venue reading
+   * "0 credits used; no reply from the provider yet" - the same venue the list
+   * above already has, saying nothing a reader can use.
+   */
   function quotaLine(home) {
     var quota = home.odds_quota || {};
     if (quota.remaining == null) {
-      return (
-        '<div class="stat-row"><span class="muted">Sportsbook odds</span>' +
-        '<span class="stat-value muted">' +
-        S.esc(S.num(quota.used) + " credits used; no reply from the provider yet") +
-        "</span></div>"
-      );
+      return "";
     }
     return (
       '<div class="stat-row"><span class="muted">Sportsbook odds quota</span>' +
@@ -170,7 +176,9 @@
     var stats = home.stats || {};
     return (
       '<div class="metric-row">' +
-      metric("Markets compared", S.num(stats.open_markets)) +
+      // `open_markets` is every open market in the catalog, so "compared" would
+      // claim a comparison that has not happened.
+      metric("Open markets", S.num(stats.open_markets)) +
       metric("Matched events", S.num(stats.matched_events)) +
       metric("Events with a gap", S.num(stats.events_with_gap)) +
       "</div>"
@@ -203,15 +211,12 @@
       "</span></div>" +
       metrics(home) +
       '<section class="stack" style="margin-top:40px">' +
-      '<div><div class="card-head"><h2 class="card-title">Widest gaps</h2>' +
+      '<div class="card">' +
+      '<div class="card-head"><h2 class="card-title">Widest gaps</h2>' +
       '<a class="label" href="search.html">All events</a></div>' +
       gapsCard(home) +
-      '<p class="label label--muted" style="margin-top:12px">Gap ' +
-      S.tip(
-        "Max minus min of fresh real-money prices, in points. One point is one cent of a one-dollar contract.",
-        "How the gap is calculated"
-      ) +
-      " · a stale price is left out of the arithmetic</p></div>" +
+      gapLegend(home) +
+      "</div>" +
       '<div class="card">' +
       freshnessCard(home) +
       "</div>" +

@@ -177,27 +177,31 @@
     );
   }
 
+  /**
+   * What the list is, in one line. It says "N of M" only when a filter is
+   * actually hiding rows - "47 of 47" is two numbers where one will do - and
+   * it counts what the list really holds: events priced by two or more venues.
+   */
   function countLine(rows) {
+    var filtered = rows.length !== source.matches;
     var text;
     if (query) {
       text =
-        S.num(rows.length) +
-        " of " +
+        (filtered ? S.num(rows.length) + " of " : "") +
         S.num(source.matches) +
         " matching market" +
         (source.matches === 1 ? "" : "s");
       if (source.capped) {
         text +=
-          " · showing the " +
-          S.num(SpreadSearch.MAX_CANDIDATES) +
-          " best matches, so refine the query to narrow it";
+          " · the top " + S.num(SpreadSearch.MAX_CANDIDATES) + " are shown, so refine the query";
       }
     } else {
       text =
-        S.num(rows.length) +
-        " matched event" +
-        (rows.length === 1 ? "" : "s") +
-        " with a price on more than one venue";
+        (filtered ? S.num(rows.length) + " of " : "") +
+        S.num(source.matches) +
+        " event" +
+        (source.matches === 1 ? "" : "s") +
+        " priced by more than one venue";
     }
     return '<p class="label label--muted" style="margin:16px 0 8px">' + S.esc(text) + "</p>";
   }
@@ -252,15 +256,9 @@
       page = 1;
     }
     body.innerHTML =
-      '<div class="page-head">' +
-      '<h1 class="headline">' +
-      (query ? "Results" : "Widest gaps") +
-      "</h1>" +
-      '<span class="label label--muted">' +
-      (query
-        ? "“" + S.esc(query) + "”"
-        : "Every matched event, widest first") +
-      "</span></div>" +
+      '<div class="page-head"><h1 class="headline">' +
+      (query ? "Results" : "Matched events") +
+      "</h1></div>" +
       filterbar() +
       countLine(rows) +
       resultsHtml(rows) +
@@ -359,8 +357,8 @@
     query = (SpreadSearch.params().get("q") || "").replace(/^\s+|\s+$/g, "");
     body.innerHTML =
       '<div class="page-head"><h1 class="headline">' +
-      (query ? "Results" : "Widest gaps") +
-      '</h1><span class="label label--muted">Loading…</span></div>';
+      (query ? "Results" : "Matched events") +
+      '</h1></div>';
 
     if (!query) {
       // Browsing needs the matched events only. The 1.9 MB token index is not
@@ -387,11 +385,15 @@
 
   function unavailable(error) {
     var body = document.getElementById("page-body");
+    // The cause is for whoever is debugging, not for the page: a reader cannot
+    // act on a failed fetch, and the browser has already logged it.
+    if (window.console && console.error) {
+      console.error("Spread: could not load the market files", error);
+    }
     body.innerHTML =
       '<div class="empty"><span class="label">Search unavailable</span><p>' +
-      S.esc(error && error.message ? error.message : String(error)) +
-      '</p><p class="muted" style="margin-top:8px">The exported search index may not have ' +
-      "been built yet. Run <span class=\"mono\">python export.py</span> and reload.</p></div>";
+      "The market files could not be loaded. Check your connection and reload the page." +
+      "</p></div>";
   }
 
   S.boot({ page: "search", title: "Search" }, render);

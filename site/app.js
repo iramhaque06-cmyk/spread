@@ -456,9 +456,9 @@
     if (row.stale) {
       flags.push('<span class="stale-tag">stale</span>');
     }
-    if (row.offsite) {
-      flags.push('<span class="stale-tag">off-site</span>');
-    }
+    // There is no "off-site" tag: a standalone market's title always goes to
+    // its venue, so the tag was true on every such row and said nothing. The
+    // `offsite` flag still drives target="_blank"; it is just not content.
     return (
       '<li class="result">' +
       '<span class="result-cat label">' +
@@ -545,9 +545,42 @@
       gap: null,
       volume: record.w,
       close: record.e,
-      stale: !!record.x,
+      // Not `record.x`: a standalone row shows no price number, so a stale tag
+      // on it tells a reader nothing they can act on. Freshness is stated where
+      // a price is actually shown - the event page and the freshness card.
+      stale: false,
       score: meta.score
     };
+  }
+
+  /**
+   * What to say when a venue could not be read.
+   *
+   * The pipeline stores the operator's own reason - an unset API key, the
+   * status line of the last run - and that belongs in a log, not on a page:
+   * "ODDS_API_KEY is not set. Put it in .env (gitignored) or the environment."
+   * tells a reader nothing and looks like a bug. This keeps the fact (the venue
+   * is not connected) and drops the plumbing, and returns "" when there is
+   * nothing wrong so callers can treat it as an optional suffix.
+   */
+  function venueTrouble(status) {
+    if (!status || !status.errors) {
+      return "";
+    }
+    var said = String(status.errors);
+    if (/ODDS_API_KEY|api[_ ]key|not set|not configured/i.test(said)) {
+      return "Not connected - no API key is configured";
+    }
+    if (/quota|credit/i.test(said)) {
+      return "Paused - the monthly quota is used up";
+    }
+    if (/rate limit|too many requests|429/i.test(said)) {
+      return "Paused - the venue's rate limit was reached";
+    }
+    if (/timeout|timed out/i.test(said)) {
+      return "The last read timed out";
+    }
+    return "The last read failed";
   }
 
   /* --- Charts ----------------------------------------------------------- */
@@ -768,8 +801,11 @@
       'aria-label="Search every market" aria-expanded="false" ' +
       'aria-controls="spread-suggest" role="combobox">' +
       '<kbd class="search-key" title="Press / to search">/</kbd>' +
-      "</form>" +
+      // The panel is a child of the form so it hangs from the box rather than
+      // from the top bar: as a sibling of the form its containing block was the
+      // whole bar, which is why it once stretched the width of the viewport.
       '<div class="suggest" id="spread-suggest" role="listbox" aria-label="Search results" hidden></div>' +
+      "</form>" +
       '<nav class="topnav" aria-label="Sections">' +
       links +
       "</nav>" +
@@ -828,18 +864,27 @@
     }
   }
 
+  /**
+   * The whole-page failure state, for when the data cannot be read at all.
+   *
+   * `message` is the technical cause, and it goes to the console rather than
+   * onto the page: this is what a reader sees when a deploy is missing its
+   * data, and "build it with python run_all.py" is not something a reader can
+   * act on. What they get is what happened and what to do about it.
+   */
   function fail(message) {
     var page = document.getElementById("page");
     if (!page) {
       return;
     }
+    if (window.console && console.error) {
+      console.error("Spread: " + message);
+    }
     page.insertAdjacentHTML(
       "afterbegin",
-      '<div class="empty"><span class="label">Data unavailable</span><p>' +
-        esc(message) +
-        '</p><p class="muted" style="margin-top:8px">Build it with <span class="mono">python run_all.py</span>, ' +
-        'serve the repository root with <span class="mono">python -m http.server</span>, and open ' +
-        '<span class="mono">/site/</span>.</p></div>'
+      '<div class="empty"><span class="label">Prices unavailable</span>' +
+        "<p>The price files could not be loaded. Check your connection and reload the page." +
+        "</p></div>"
     );
   }
 
@@ -892,6 +937,7 @@
     gapText: gapText,
     venueLabel: venueLabel,
     venueTypeLabel: venueTypeLabel,
+    venueTrouble: venueTrouble,
     isRealMoney: isRealMoney,
     isPlayMoney: isPlayMoney,
     timeAgo: timeAgo,

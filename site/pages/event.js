@@ -178,9 +178,13 @@
         : eligible < 2
           ? "needs two fresh real-money prices; " + eligible + " available"
           : "not comparable";
+      // No gap is not a number, so it does not get a number's treatment. The
+      // 44px line, the "· points" unit and the reason stacked under it came to
+      // three lines of dead space for an em dash, and a unit with nothing to
+      // measure. One label line says all of it.
       return (
-        '<span class="label">Gap · points</span>' +
-        '<span class="big gap--none">—</span>' +
+        '<span class="label">Gap</span> ' +
+        '<span class="label gap--none">—</span> ' +
         '<span class="label label--muted">' +
         S.esc(why) +
         " " +
@@ -278,10 +282,14 @@
   function booksFootNote(books, home) {
     var status = venueStatus(home, "odds_api");
     if (status && status.errors && !books.length) {
+      // Not the provider's own error text: this is the one light card a reader
+      // is trying to compare prices in, and an unset environment variable is
+      // not a price.
       return (
-        '<p class="venue-note" style="margin-top:8px">No sportsbook price is shown: ' +
-        S.esc(shortError(status.errors)) +
-        "</p>"
+        '<p class="venue-note" style="margin-top:8px">No sportsbook price is stored ' +
+        "right now. " +
+        S.esc(S.venueTrouble(status) || "The provider could not be reached") +
+        ".</p>"
       );
     }
     if (!books.length) {

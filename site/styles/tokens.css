@@ -99,6 +99,10 @@
   --hairline: var(--color-carbon-lift);
   --topbar-height: 64px;
   --search-width: 520px;
+  /* The type-ahead is wider than the box it hangs from, so a long question
+   * still fits; it is bounded so the list reads as attached to the input
+   * instead of as a sheet across the page. */
+  --suggest-width: 720px;
   --breakpoint-narrow: 900px;
   --sparkline-height: 40px;
   /* The comparison bar is 6px tall and full-width: a readout, not a chart. */

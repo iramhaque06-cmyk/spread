@@ -404,7 +404,15 @@
     return loadEvents().then(browse);
   }
 
-  /** Every matched event as a row, widest gap first - the no-query browse. */
+  /**
+   * Every matched event as a row, widest gap first - the no-query browse.
+   *
+   * Only events with two or more venues: this page exists to show the same
+   * question priced more than once, and a single-venue event has no comparison
+   * to show. Counting them here is what let the page claim "more than one
+   * venue" over thirty rows that had one. A market on its own is still found by
+   * typing - that is where the row says "1 venue" and links to the venue.
+   */
   function browse() {
     if (!eventIndex) {
       return { rows: [], matches: 0, capped: false };
@@ -412,6 +420,9 @@
     var out = [];
     for (var index_ = 0; index_ < eventIndex.events.length; index_ += 1) {
       var event = eventIndex.events[index_];
+      if ((event.n || 1) < 2) {
+        continue;
+      }
       var row = S.eventRow(event, { score: 0 });
       row.kind = "event";
       row.id = event.i;
@@ -425,8 +436,16 @@
 
   /* --- The top bar's type-ahead ---------------------------------------- */
 
+  /**
+   * A dropdown row is a list of titles to pick from, so its meta line only says
+   * something when it is the exception: the gap if there is one, otherwise a
+   * venue count above one. "1 venue" on all eight items is eight restatements
+   * of the default and reads as noise.
+   */
   function suggestItem(row, position) {
-    var meta = row.gap == null ? row.count : row.count + " · " + S.gapText(row.gap);
+    var meta = row.gap == null
+      ? (row.venues > 1 ? row.count : "")
+      : S.gapText(row.gap) + (row.venues > 1 ? " · " + row.count : "");
     return (
       '<button class="suggest-item" type="button" role="option" id="spread-option-' +
       position +

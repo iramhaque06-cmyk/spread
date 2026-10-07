@@ -347,8 +347,13 @@ h4 {
   position: absolute;
   z-index: 30;
   top: calc(100% + 8px);
+  /* Hangs from the search box: wider than the box so a long question still
+   * fits, bounded so it never runs off a narrow screen. The form is the
+   * positioned ancestor, which is what makes `left: 0` mean the box's edge. */
   left: 0;
-  right: 0;
+  right: auto;
+  width: var(--suggest-width);
+  max-width: calc(100vw - 32px);
   max-height: min(60vh, 460px);
   overflow-y: auto;
   padding: var(--spacing-8);
@@ -751,13 +756,19 @@ h4 {
   color: var(--color-graphite-mid);
 }
 
+/* The comparison line lives on two surfaces: the event page's one light card
+ * and its dark play-money card. Every rule here therefore takes the dark
+ * surface as its default and lets `.card--light` below repaint it, which is how
+ * the bar, the tip and the stale tag already work. Getting that backwards is
+ * how the play-money card once drew its venue name and price in the canvas
+ * colour on the canvas - 1.1:1, present in the DOM and invisible on screen. */
 .venue-line {
   display: grid;
   grid-template-columns: minmax(84px, 132px) minmax(60px, 1fr) 68px auto;
   align-items: center;
   gap: var(--spacing-8) var(--spacing-16);
   padding: 9px 0;
-  border-top: 1px solid rgba(16, 16, 16, 0.14);
+  border-top: 1px solid var(--hairline);
 }
 
 .strip-group .venue-line:first-of-type,
@@ -767,7 +778,7 @@ h4 {
 
 .venue-name {
   font-size: var(--text-body-sm);
-  color: var(--color-obsidian-canvas);
+  color: var(--text-primary);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -777,22 +788,39 @@ h4 {
   text-align: right;
   font-family: var(--font-geist-mono);
   font-variant-numeric: tabular-nums;
-  color: var(--color-obsidian-canvas);
+  color: var(--text-primary);
 }
 
 .venue-price--stale {
-  color: var(--color-graphite-mid);
+  color: var(--text-muted);
 }
 
 .venue-note {
   grid-column: 1 / -1;
   font-size: 12px;
   line-height: 1.45;
-  color: var(--color-graphite-mid);
+  color: var(--text-tertiary);
 }
 
 .venue-note:empty {
   display: none;
+}
+
+.card--light .venue-line {
+  border-top-color: rgba(16, 16, 16, 0.14);
+}
+
+.card--light .venue-name,
+.card--light .venue-price {
+  color: var(--color-obsidian-canvas);
+}
+
+.card--light .venue-price--stale {
+  color: var(--color-graphite-mid);
+}
+
+.card--light .venue-note {
+  color: var(--color-graphite-mid);
 }
 
 /* --- Controls --------------------------------------------------------- */

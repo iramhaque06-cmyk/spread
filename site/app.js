@@ -505,18 +505,33 @@
     };
   }
 
-  /** One standalone market, from a compact catalog record. */
+  /**
+   * One standalone market, from a compact catalog record.
+   *
+   * A single venue has no cross-venue range, so the bar is the market's own
+   * price and nothing wider. The record's `o` outcomes must not be used for the
+   * range: they are the venue's own other side, so a market trading at 2 points
+   * carries a 98-point complement and the bar would claim the widest
+   * disagreement on the site while the gap beside it reads "—". Outcomes are
+   * the fallback only for a market that has no price of its own.
+   */
   function marketRow(record, key, meta) {
     meta = meta || {};
     var marks = record.p == null ? [] : [record.p];
-    var outcomes = [];
-    for (var index = 0; index < (record.o || []).length; index += 1) {
-      if (record.o[index].p != null) {
-        outcomes.push(record.o[index].p);
+    var lo = record.p;
+    var hi = record.p;
+    if (lo == null) {
+      var outcomes = [];
+      for (var index = 0; index < (record.o || []).length; index += 1) {
+        if (record.o[index].p != null) {
+          outcomes.push(record.o[index].p);
+        }
+      }
+      if (outcomes.length) {
+        lo = Math.min.apply(null, outcomes);
+        hi = Math.max.apply(null, outcomes);
       }
     }
-    var lo = outcomes.length ? Math.min.apply(null, outcomes) : record.p;
-    var hi = outcomes.length ? Math.max.apply(null, outcomes) : record.p;
     return {
       bucket: categoryBucket({ title: record.t, category: record.c }),
       title: record.t || key,

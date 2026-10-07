@@ -17,7 +17,7 @@ word for anything:
   exporter promises: 1.5 MB per catalog shard and 2 MB for the first search
   index. A single byte over is a failure, because the limit is the promise.
 * **The searches are real searches.** They run through :mod:`searchindex`,
-  the same reader the site uses: load ``index-1.json``, follow the dictionary
+  the same reader the site uses: load ``index-0.json``, follow the dictionary
   to the shards a word needs, intersect the postings, then resolve each hit
   through ``catalog/manifest.json``. That exercises the whole contract, and
   the files-loaded count proves the lazy path is lazy.
@@ -176,8 +176,8 @@ def _exported(data_dir, failures: list[str], *, prices_only: bool = False) -> No
             print(f"    {name:28} {size:>10,} bytes{flag}")
         if search:
             first = search[0]
-            if first[0] != "search/index-1.json":
-                failures.append("the first search shard is not search/index-1.json")
+            if first[0] != "search/index-0.json":
+                failures.append("the first search shard is not search/index-0.json")
             elif first[1] > export.SEARCH_LIMIT:
                 failures.append(
                     f"the first search shard is {first[1]:,} bytes, over the "
@@ -191,6 +191,7 @@ def _exported(data_dir, failures: list[str], *, prices_only: bool = False) -> No
     home = data_path / "home.json"
     event_files = len(list(events_dir.glob("*.json"))) if events_dir.exists() else 0
     print(f"  event files: {event_files}")
+    _event_index(data_dir, event_files, failures)
     if not home.exists():
         failures.append("home.json is missing")
         return
@@ -202,6 +203,37 @@ def _exported(data_dir, failures: list[str], *, prices_only: bool = False) -> No
         f"{stats.get('events_with_gap', 0)} gaps, "
         f"{len(document.get('recent_moves', []))} moves"
     )
+
+
+def _event_index(data_dir, event_files: int, failures: list[str]) -> None:
+    """The file a search result row is drawn from, checked against the events.
+
+    A search finds market keys and the row owes the reader a venue count, a
+    price range and a gap; that comes from events-index.json. If it points at
+    an event that is not on disk, every matched result is a broken link, so it
+    is checked here rather than discovered by a reader.
+    """
+    path = Path(data_dir) / "events-index.json"
+    if not path.exists():
+        failures.append("events-index.json is missing")
+        return
+    document = json.loads(path.read_text(encoding="utf-8"))
+    rows = document.get("events") or []
+    markets = document.get("markets") or {}
+    print(
+        f"  events-index.json: {path.stat().st_size:,} bytes - "
+        f"{len(rows)} events, {len(markets)} matched markets"
+    )
+    if len(rows) != event_files:
+        failures.append(
+            f"events-index.json lists {len(rows)} events but {event_files} files exist"
+        )
+    for row in rows:
+        if not (Path(data_dir) / "events" / f"{row['i']}.json").exists():
+            failures.append(f"events-index.json points at a missing event: {row['i']}")
+    for key, event_id in list(markets.items())[:1]:
+        if event_id not in {row["i"] for row in rows}:
+            failures.append(f"events-index.json maps {key} to unknown event {event_id}")
 
 
 def _prices_only_skipped() -> None:
@@ -224,7 +256,7 @@ def _searches(data_dir, failures: list[str]) -> None:
         f"in {len(index.bounds)} shard(s)"
     )
     opened_before = index.shards_loaded()
-    print(f"  files loaded before any query: {opened_before} (index-1.json only)")
+    print(f"  files loaded before any query: {opened_before} (index-0.json only)")
     found_any = False
     for term in SEARCHES:
         shards = sorted(

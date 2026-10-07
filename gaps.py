@@ -75,11 +75,20 @@ def event_prices(members, markets_by_key, *, now=None) -> list[dict]:
 
 
 def gap(points) -> float | None:
-    """Max minus min of the fresh real-money prices, or ``None``."""
-    eligible = [point["price"] for point in points if point.get("gap_eligible")]
-    if len(eligible) < 2:
+    """Max minus min of the fresh real-money prices, or ``None``.
+
+    Two **venues** are required, not two prices. A venue that quotes several
+    markets for one event - a book's outcomes, or a match that gathered several
+    of its markets - would otherwise compare its own prices with each other and
+    report the difference as a cross-venue gap. That is a difference between
+    two questions, not a disagreement about one, and the rule has always been
+    two venues (PLAN.md §2.2).
+    """
+    eligible = [point for point in points if point.get("gap_eligible")]
+    if len({point.get("venue") for point in eligible}) < 2:
         return None
-    return round(max(eligible) - min(eligible), 2)
+    prices = [point["price"] for point in eligible]
+    return round(max(prices) - min(prices), 2)
 
 
 def summarise(points) -> dict:

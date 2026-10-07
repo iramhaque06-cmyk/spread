@@ -18,18 +18,25 @@ files are shaped for that and nothing else:
     The markets themselves, in compact keyed form, each shard at or under
     :data:`CATALOG_LIMIT` bytes. Shards are ordered by market id, so the
     manifest's ``from``/``to`` pair resolves any key by binary search.
-``data/search/index-1.json``
+``data/search/index-0.json``
     The search dictionary, and the first slice of postings. It carries every
     token shard's alphabet range, so a client knows which file a typed prefix
     belongs to without fetching one, then the postings for the front range.
+    Shards are numbered from zero, so this is the one file a client fetches to
+    start searching at all (PLAN.md §4).
 ``data/search/index-<n>.json``
     Postings for one alphabetical slice: normalized token -> market keys. The
-    client binary-searches ``bounds`` in shard 1 and fetches exactly the slice
+    client binary-searches ``bounds`` in shard 0 and fetches exactly the slice
     the typed text lands in, never the rest.
 ``data/events/<id>.json``
     One matched event: its comparable prices with freshness already decided,
     the price history the pipeline actually observed, the venue rule text and
     the source links.
+``data/events-index.json``
+    The bridge between the two: which matched event a market key belongs to,
+    and each event's venue count, price range and gap. A search finds markets;
+    this is what lets a result row show a comparison without fetching a
+    hundred event files.
 ``data/home.json``
     The landing document: the widest gaps, the biggest recent moves, per-venue
     health and the sportsbook quota.
@@ -95,6 +102,23 @@ CATALOG_FIELDS = {
     "r": "rule_text, truncated",
     "f": "fetched_at",
     "x": "is_stale, judged here by freshness.py",
+}
+
+# The compact event-index fields, for the same reason: the file is read by JS.
+EVENT_INDEX_FIELDS = {
+    "i": "event id, as the filename under events/",
+    "t": "title, the matched event's own",
+    "c": "category, from the parent venue event",
+    "e": "close_time",
+    "g": "gap, in points; null when fewer than two fresh real-money prices",
+    "n": "venue_count, how many venues cover this event",
+    "y": "venue types present: prediction_market, sportsbook, play_money, forecast",
+    "lo": "lowest comparable price, in points",
+    "hi": "highest comparable price, in points",
+    "x": "is_stale: the range shown had to fall back to prices past the freshness limit",
+    "w": "combined volume across the event's markets",
+    "p": "possible: the match is below the confidence floor",
+    "r": "rules_differ: the venues' rules are not the same",
 }
 
 
@@ -272,7 +296,9 @@ def build_search(conn, out_dir: Path, *, now: datetime, limit: int | None = None
             "to": group[-1][0],
             "postings": merged,
         }
-        if number == 1:
+        # Numbered from zero, so shard 0 is the entry point a client fetches
+        # first and carries the dictionary (PLAN.md §4).
+        if number == 0:
             built["generated_at"] = _stamp(now)
             built["markets"] = len(rows)
             built["vocab"] = len(tokens)
@@ -280,12 +306,13 @@ def build_search(conn, out_dir: Path, *, now: datetime, limit: int | None = None
             built["tokens"] = _dictionary(all_groups)
         return built
 
-    files, splits = _write_groups(search_dir, "index", groups, SEARCH_LIMIT, document)
-    bounds = [[item[0][0], item[-1][0]] for item in groups]
-    for item in files:
-        item["count"] = len(
-            {token for token, _keys in _group_at(groups, item["shard"])}
-        )
+    files, splits = _write_groups(
+        search_dir, "index", groups, SEARCH_LIMIT, document, start=0
+    )
+    # A token whose postings were cut into pieces appears in more than one
+    # group; the count a reader cares about is tokens, not pieces.
+    for group, item in zip(groups, files):
+        item["count"] = len({token for token, _keys in group})
 
     return {
         "generated_at": _stamp(now),
@@ -293,7 +320,7 @@ def build_search(conn, out_dir: Path, *, now: datetime, limit: int | None = None
         "markets": len(rows),
         "vocab": len(tokens),
         "shards": len(files),
-        "bounds": bounds,
+        "bounds": [[item[0][0], item[-1][0]] for item in groups],
         "files": files,
         "split_on_verify": splits,
     }
@@ -317,7 +344,7 @@ def _pieces(keys: list[str]):
 def _dictionary(groups) -> dict:
     """Which shard(s) hold each token, as the always-loaded lookup."""
     out: dict = {}
-    for number, group in enumerate(groups, start=1):
+    for number, group in enumerate(groups):
         for token, _keys in group:
             existing = out.get(token)
             if existing is None:
@@ -328,10 +355,6 @@ def _dictionary(groups) -> dict:
             elif existing != number:
                 out[token] = [existing, number]
     return out
-
-
-def _group_at(groups, number: int):
-    return groups[number - 1]
 
 
 # --------------------------------------------------------------------------- #
@@ -345,6 +368,12 @@ def build_event(
     """One matched event as the site reads it: prices, history, rules, sources."""
     points = gaps.event_prices(members, markets_by_key, now=now)
     summary = gaps.summarise(points)
+    # A pairing below the matcher's confidence floor is shown, labelled, and
+    # never counted in a gap (PLAN.md section 2.2). catalog.compute_gaps()
+    # already holds that line for the stored column; this holds it for the
+    # document, which is the copy the site reads.
+    if event["possible"]:
+        summary["gap"] = None
 
     member_by_key = {
         market_key(member["venue"], member["market_id"]): member for member in members
@@ -354,6 +383,7 @@ def build_event(
         key = market_key(point["venue"], point["market_id"])
         member = member_by_key.get(key, {})
         row = markets_by_key.get((point["venue"], point["market_id"]), {})
+        raw, margin = _book_terms(point, member, row)
         prices.append(
             {
                 "venue": point["venue"],
@@ -361,6 +391,8 @@ def build_event(
                 "venue_type": point["venue_type"],
                 "outcome": member.get("outcome") or "",
                 "price": point["price"],
+                "raw": raw,
+                "margin": margin,
                 "fresh": point["fresh"],
                 "real_money": point["real_money"],
                 "gap_eligible": point["gap_eligible"],
@@ -424,6 +456,109 @@ def build_event(
     }
 
 
+def _book_terms(point: dict, member: dict, row: dict) -> tuple[float | None, float | None]:
+    """A sportsbook row's raw decimal odds and the book's own margin.
+
+    The price the site compares is already de-vigged, so the raw figure and the
+    margin it was derived from are carried alongside for the detail view - the
+    brief asks for them in a collapsed section and nowhere else.
+
+    The margin is the overround: the raw implied probabilities of a book's
+    outcomes add up to more than one, and the excess is what the bookmaker
+    keeps. It is only meaningful when every outcome of the market is present,
+    which is why it comes from the stored market rather than from the one row
+    being displayed.
+    """
+    if point["venue_type"] != "sportsbook":
+        return None, None
+    book = row.get("outcomes") or []
+    decimals = [item.get("price_raw") for item in book if item.get("price_raw")]
+    margin = None
+    if decimals:
+        margin = round((sum(1.0 / value for value in decimals) - 1.0) * 100, 2)
+    wanted = member.get("outcome") or ""
+    chosen = next(
+        (item for item in book if (item.get("name") or "") == wanted),
+        None,
+    )
+    if chosen is None and len(book) == 1:
+        chosen = book[0]
+    return (chosen or {}).get("price_raw"), margin
+
+
+def build_event_index(events: list[dict], documents: dict, *, now) -> dict:
+    """The bridge between the token index and the matched events.
+
+    A search runs against the token index, which only knows markets. To draw a
+    result row the way the brief asks - a venue count, the price range across
+    those venues, and the gap - the client has to know whether the market it
+    found belongs to a matched event, and if so what that event's numbers are.
+    Walking every event file to find out would be a hundred requests; this one
+    file answers it in one, and it is rebuilt from the same documents as the
+    event files, so the row and the event page cannot disagree.
+    """
+    rows = []
+    by_market: dict[str, str] = {}
+    for event in events:
+        document = documents.get(event["event_key"], {})
+        prices = document.get("prices") or []
+        # The bar spans the prices that could take part in a gap. When nothing
+        # in the event is fresh it falls back to the real-money prices anyway,
+        # flagged - a stale range with the staleness visible beats a row that
+        # looks comparable because its range was quietly dropped. A play-money
+        # price never widens a real-money range.
+        comparable = [
+            price["price"]
+            for price in prices
+            if price.get("gap_eligible") and price.get("price") is not None
+        ]
+        real = [
+            price["price"]
+            for price in prices
+            if price.get("real_money") and price.get("price") is not None
+        ]
+        values = comparable or real
+        volumes = [
+            price["volume"] for price in prices if price.get("volume") is not None
+        ]
+        rows.append(
+            {
+                "i": event["event_key"],
+                "t": event["title"],
+                "c": event["category"],
+                "e": event["close_time"],
+                # From the document, so the index, the event page and home.json
+                # cannot disagree about one event's gap.
+                "g": document.get("gap"),
+                "n": len({price["venue"] for price in prices}),
+                "y": sorted(
+                    {price["venue_type"] for price in prices if price.get("venue_type")}
+                ),
+                "lo": min(values) if values else None,
+                "hi": max(values) if values else None,
+                "x": not comparable and bool(values),
+                "w": sum(volumes) if volumes else None,
+                "p": bool(event["possible"]),
+                "r": bool(event["rules_differ"]),
+            }
+        )
+        for price in prices:
+            by_market[market_key(price["venue"], price["market_id"])] = event[
+                "event_key"
+            ]
+
+    rows.sort(
+        key=lambda item: (-(item["g"] if item["g"] is not None else -1), item["i"])
+    )
+    return {
+        "generated_at": _stamp(now),
+        "fields": EVENT_INDEX_FIELDS,
+        "count": len(rows),
+        "events": rows,
+        "markets": by_market,
+    }
+
+
 def build_home(
     conn, events: list[dict], documents: dict, *, now: datetime
 ) -> dict:
@@ -435,16 +570,22 @@ def build_home(
     """
     gap_rows = []
     for event in events:
-        if event["gap"] is None:
-            continue
         document = documents.get(event["event_key"], {})
+        # The gap and the venue count come from the event document, which is the
+        # same object the event page is built from - not from the stored column,
+        # which can be a pass behind. One event, one gap, whichever file reads it.
+        if document.get("gap") is None:
+            continue
         gap_rows.append(
             {
                 "id": event["event_key"],
                 "title": event["title"],
                 "category": event["category"],
                 "close_time": event["close_time"],
-                "gap": event["gap"],
+                "gap": document["gap"],
+                "venue_count": len(
+                    {price["venue"] for price in document.get("prices", [])}
+                ),
                 "confidence": event["confidence"],
                 "possible": event["possible"],
                 "rules_differ": event["rules_differ"],
@@ -559,7 +700,9 @@ def export_all(
         )
     report["events"] = {
         "count": len(events),
-        "with_gap": sum(1 for event in events if event["gap"] is not None),
+        "with_gap": sum(
+            1 for event in events if documents[event["event_key"]]["gap"] is not None
+        ),
         "possible": sum(1 for event in events if event["possible"]),
     }
 
@@ -569,6 +712,17 @@ def export_all(
         "top_gaps": len(home["top_gaps"]),
         "recent_moves": len(home["recent_moves"]),
         "bytes": _write(out_dir / "home.json", home),
+    }
+
+    # Rebuilt with the events, in both cadences: it is derived from the same
+    # documents, so the 30 minute pass keeps a search result row in step with
+    # the event page it links to.
+    event_index = build_event_index(events, documents, now=now)
+    report["event_index"] = {
+        "file": "events-index.json",
+        "events": event_index["count"],
+        "markets": len(event_index["markets"]),
+        "bytes": _write(out_dir / "events-index.json", event_index),
     }
     return report
 
@@ -620,20 +774,24 @@ def _greedy_fill(items, sizes, limit: int, *, first_limit: int | None = None) ->
     return groups
 
 
-def _write_groups(directory: Path, stem: str, groups, limit: int, document) -> tuple[list, int]:
+def _write_groups(
+    directory: Path, stem: str, groups, limit: int, document, *, start: int = 1
+) -> tuple[list, int]:
     """Write one document per group, guaranteed to fit `limit` bytes.
 
     ``document(number, all_groups, group)`` builds the real document, so the
     size that is checked is the size that lands on disk. A group that still
     exceeds the limit is halved and the whole thing is measured again; a group
     of one is left alone, because there is nothing left to split (and one
-    market record is nowhere near a megabyte).
+    market record is nowhere near a megabyte). ``start`` is 1 for the catalog
+    (``kalshi-1.json``) and 0 for the search index (``index-0.json``), whose
+    first shard is the dictionary a client has to fetch before it can search.
     """
     splits = 0
     while True:
         documents = [
-            document(number, groups, groups[number - 1])
-            for number in range(1, len(groups) + 1)
+            document(start + offset, groups, group)
+            for offset, group in enumerate(groups)
         ]
         oversize = [
             index
@@ -648,7 +806,8 @@ def _write_groups(directory: Path, stem: str, groups, limit: int, document) -> t
             splits += 1
 
     files = []
-    for number, group in enumerate(groups, start=1):
+    for offset, group in enumerate(groups):
+        number = start + offset
         path = directory / f"{stem}-{number}.json"
         files.append(
             {
@@ -656,7 +815,7 @@ def _write_groups(directory: Path, stem: str, groups, limit: int, document) -> t
                 "shard": number,
                 "count": len(group),
                 "pieces": len(group),
-                "bytes": _write(path, documents[number - 1]),
+                "bytes": _write(path, documents[offset]),
                 "from": _edge(group, first=True),
                 "to": _edge(group, first=False),
             }
@@ -784,6 +943,11 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"  home: {report['home']['top_gaps']} gaps, "
         f"{report['home']['recent_moves']} moves, {report['home']['bytes']:,} bytes"
+    )
+    print(
+        f"  events-index: {report['event_index']['events']} events, "
+        f"{report['event_index']['markets']} matched markets, "
+        f"{report['event_index']['bytes']:,} bytes"
     )
     return 0
 

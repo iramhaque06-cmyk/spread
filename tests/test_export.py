@@ -225,19 +225,19 @@ class CatalogShardTest(ExportCase):
 
 
 class SearchIndexTest(ExportCase):
-    """The token index: a dictionary in shard 1, postings behind it."""
+    """The token index: a dictionary in shard 0, postings behind it."""
 
     def test_finds_a_market_by_a_title_token(self):
         self.add(record("kalshi", "FED1", title="Will the Fed cut rates in December?"))
         self.export()
-        postings = self.read("search", "index-1.json")["postings"]
+        postings = self.read("search", "index-0.json")["postings"]
         self.assertIn("fed", postings)
         self.assertEqual(postings["fed"], ["kalshi:FED1"])
 
     def test_indexes_the_category_and_the_venue_too(self):
         self.add(record("kalshi", "FED1", title="Will rates fall?", category="Economics"))
         self.export()
-        postings = self.read("search", "index-1.json")["postings"]
+        postings = self.read("search", "index-0.json")["postings"]
         self.assertIn("economics", postings)
         self.assertIn("kalshi", postings)
 
@@ -245,18 +245,19 @@ class SearchIndexTest(ExportCase):
         self.add(record("kalshi", "N1", title="Will bitcoin close above 100,000?")
                  , record("kalshi", "N2", title="Will bitcoin close above 100k?"))
         self.export()
-        postings = self.read("search", "index-1.json")["postings"]
+        postings = self.read("search", "index-0.json")["postings"]
         self.assertEqual(postings["100000"], ["kalshi:N1", "kalshi:N2"])
 
-    def test_bounds_cover_every_shard_and_shard_one_carries_them(self):
+    def test_bounds_cover_every_shard_and_shard_zero_carries_them(self):
+        """Shards are numbered from zero, so index-0.json is the entry point."""
         self.add(*[record("kalshi", f"K{index:03}", title=f"Topic {index} here")
                    for index in range(60)])
         with mock.patch.object(export, "SEARCH_LIMIT", 3000):
             self.export()
-        first = self.read("search", "index-1.json")
-        self.assertEqual(first["shard"], 1)
+        first = self.read("search", "index-0.json")
+        self.assertEqual(first["shard"], 0)
         self.assertGreater(len(first["bounds"]), 1)
-        for number, (low, high) in enumerate(first["bounds"], start=1):
+        for number, (low, high) in enumerate(first["bounds"]):
             document = self.read("search", f"index-{number}.json")
             self.assertEqual(document["from"], low)
             self.assertEqual(document["to"], high)
@@ -274,14 +275,14 @@ class SearchIndexTest(ExportCase):
                    for index in range(30)])
         with mock.patch.object(export, "SEARCH_LIMIT", 2000):
             self.export()
-        bounds = self.read("search", "index-1.json")["bounds"]
+        bounds = self.read("search", "index-0.json")["bounds"]
         flattened = [item for pair in bounds for item in pair]
         self.assertEqual(flattened, sorted(flattened))
 
-    def test_every_token_in_shard_one_appears_in_its_own_alphabet_range(self):
+    def test_every_token_in_shard_zero_appears_in_its_own_alphabet_range(self):
         self.add(record("kalshi", "FED1", title="Fed bitcoin nfl zebra"))
         self.export()
-        first = self.read("search", "index-1.json")
+        first = self.read("search", "index-0.json")
         for token in first["postings"]:
             low, high = first["from"], first["to"]
             self.assertLessEqual(low, token)
@@ -375,6 +376,10 @@ class EventExportTest(ExportCase):
         self.export()
         document = self.read("events", "ev-abc.json")
         self.assertTrue(document["possible"])
+        # Two fresh real-money prices that would give 5.0 points, and still no
+        # gap: a near-match may be shown but never counted (PLAN.md 2.2).
+        self.assertEqual(document["gap"], None)
+        self.assertEqual(self.read("events-index.json")["events"][0]["g"], None)
 
     def test_event_ids_are_safe_as_filenames(self):
         self.assertEqual(export._safe_id("ev-abc:1/2"), "ev-abc_1_2")
@@ -455,6 +460,203 @@ class HomeTest(ExportCase):
         self.assertEqual(quota["used"], 20)
 
 
+class EventIndexTest(ExportCase):
+    """The bridge between a search hit and the event it belongs to.
+
+    A search finds market keys; a result row owes the reader a venue count, the
+    price range across venues and the gap. That has to come from one small file
+    rather than from walking every event document.
+    """
+
+    def match(self, pairs, *, venue_count=2, confidence=95.0):
+        self.conn.execute(
+            "INSERT INTO matched_events (event_key, title, category, close_time, "
+            "confidence, possible, rules_differ, venue_count, gap, updated_at) "
+            "VALUES ('ev-abc', 'Fed decision', 'Economics', '2026-12-31', ?, 0, 0, ?, NULL, ?)",
+            (confidence, venue_count, ISO),
+        )
+        for venue, market_id, outcome in pairs:
+            self.conn.execute(
+                "INSERT INTO matched_members (event_key, venue, market_id, outcome, "
+                "confidence, rules_differ, matched_on) VALUES ('ev-abc', ?, ?, ?, ?, 0, 'title')",
+                (venue, market_id, outcome, confidence),
+            )
+        self.conn.commit()
+
+    def test_it_maps_matched_markets_and_carries_the_event_totals(self):
+        self.add(
+            record("kalshi", "FED1", price=62.0),
+            record("polymarket", "fed-1", price=57.0),
+        )
+        self.match((("kalshi", "FED1", ""), ("polymarket", "fed-1", "")))
+        import catalog
+
+        catalog.compute_gaps(self.conn, now=NOW)
+        self.export()
+
+        index = self.read("events-index.json")
+        self.assertEqual(index["count"], 1)
+        self.assertEqual(
+            index["markets"],
+            {"kalshi:FED1": "ev-abc", "polymarket:fed-1": "ev-abc"},
+        )
+        row = index["events"][0]
+        self.assertEqual(row["i"], "ev-abc")
+        self.assertEqual(row["t"], "Fed decision")
+        self.assertEqual(row["n"], 2)
+        self.assertEqual(row["g"], 5.0)
+        self.assertEqual((row["lo"], row["hi"]), (57.0, 62.0))
+        self.assertEqual(row["y"], ["prediction_market"])
+        # A search row is rendered by JS, so the file has to explain itself.
+        self.assertEqual(set(row) - set(index["fields"]), set())
+
+    def test_a_play_money_price_never_widens_the_row_range(self):
+        self.add(
+            record("kalshi", "FED1", price=62.0),
+            record("polymarket", "fed-1", price=57.0),
+            record("manifold", "fed1", price=3.0, venue_type="play_money"),
+        )
+        self.match(
+            (
+                ("kalshi", "FED1", ""),
+                ("polymarket", "fed-1", ""),
+                ("manifold", "fed1", ""),
+            ),
+            venue_count=3,
+        )
+        import catalog
+
+        catalog.compute_gaps(self.conn, now=NOW)
+        self.export()
+
+        row = self.read("events-index.json")["events"][0]
+        # The range the row draws is the comparable one, so mana cannot make a
+        # two-venue gap look like a sixty-point one.
+        self.assertEqual((row["lo"], row["hi"]), (57.0, 62.0))
+        self.assertEqual(row["g"], 5.0)
+        self.assertEqual(row["y"], ["play_money", "prediction_market"])
+
+    def test_a_single_venue_event_is_written_too(self):
+        self.add(record("kalshi", "FED1", price=62.0))
+        self.match((("kalshi", "FED1", ""),), venue_count=1)
+        import catalog
+
+        catalog.compute_gaps(self.conn, now=NOW)
+        self.export()
+        row = self.read("events-index.json")["events"][0]
+        # "1 venue" is a row a reader must be able to see, not a missing one.
+        self.assertEqual(row["n"], 1)
+        self.assertIsNone(row["g"])
+        self.assertEqual((row["lo"], row["hi"]), (62.0, 62.0))
+
+    def test_two_markets_from_one_venue_are_not_a_gap(self):
+        """One venue comparing with itself is not a cross-venue comparison."""
+        self.add(
+            record("polymarket", "a", price=1.0),
+            record("polymarket", "b", price=97.0),
+        )
+        self.match((("polymarket", "a", ""), ("polymarket", "b", "")))
+        import catalog
+
+        catalog.compute_gaps(self.conn, now=NOW)
+        self.export()
+
+        row = self.read("events-index.json")["events"][0]
+        self.assertIsNone(row["g"])
+        self.assertEqual(row["n"], 1)
+        self.assertEqual(self.read("events", "ev-abc.json")["gap"], None)
+        self.assertEqual(self.read("home.json")["stats"]["events_with_gap"], 0)
+
+    def test_the_row_the_index_and_the_event_file_share_one_gap(self):
+        """A stale stored column must not become a second, different gap."""
+        self.add(
+            record("kalshi", "FED1", price=62.0),
+            record("polymarket", "fed-1", price=57.0),
+        )
+        self.match((("kalshi", "FED1", ""), ("polymarket", "fed-1", "")))
+        self.conn.execute("UPDATE matched_events SET gap = 99.0")
+        self.conn.commit()
+        self.export()
+
+        self.assertEqual(self.read("events-index.json")["events"][0]["g"], 5.0)
+        self.assertEqual(self.read("events", "ev-abc.json")["gap"], 5.0)
+        home = self.read("home.json")
+        self.assertEqual(home["top_gaps"][0]["gap"], 5.0)
+        # The row carries the venue count the page draws its label from.
+        self.assertEqual(home["top_gaps"][0]["venue_count"], 2)
+
+    def test_the_index_is_rebuilt_by_the_prices_only_pass(self):
+        self.add(record("kalshi", "FED1", price=62.0))
+        self.match((("kalshi", "FED1", ""),), venue_count=1)
+        self.export(prices_only=True)
+        self.assertTrue((self.out / "events-index.json").exists())
+
+
+class SportsbookTermsTest(ExportCase):
+    """A book's raw decimal odds and its margin, for the collapsed details.
+
+    The site compares the de-vigged probability, and the brief asks for the raw
+    figure and the margin only inside a collapsed section - but they never
+    reach the event file unless this carries them.
+    """
+
+    def book(self):
+        self.add(
+            record(
+                "odds_api",
+                "ev1",
+                venue_type="sportsbook",
+                price=None,
+                price_kind="implied_devig",
+                outcomes=(
+                    outcome("New York Knicks", 60.98, price_raw=1.6),
+                    outcome("Boston Celtics", 39.02, price_raw=2.5),
+                ),
+            )
+        )
+        self.conn.execute(
+            "INSERT INTO matched_events (event_key, title, category, close_time, "
+            "confidence, possible, rules_differ, venue_count, gap, updated_at) "
+            "VALUES ('ev-abc', 'Knicks at Celtics', 'Sports', '', 95.0, 0, 0, 2, NULL, ?)",
+            (ISO,),
+        )
+        for venue, market_id, named in (("odds_api", "ev1", "New York Knicks"),):
+            self.conn.execute(
+                "INSERT INTO matched_members (event_key, venue, market_id, outcome, "
+                "confidence, rules_differ, matched_on) VALUES ('ev-abc', ?, ?, ?, 95.0, 0, 'teams')",
+                (venue, market_id, named),
+            )
+        self.conn.commit()
+
+    def test_raw_odds_and_margin_ride_along_with_the_devigged_price(self):
+        self.book()
+        self.export()
+        price = self.read("events", "ev-abc.json")["prices"][0]
+        self.assertEqual(price["venue_type"], "sportsbook")
+        self.assertEqual(price["price"], 60.98)
+        self.assertEqual(price["raw"], 1.6)
+        # 1/1.6 + 1/2.5 = 1.025, so the book is holding 2.5% for itself.
+        self.assertEqual(price["margin"], 2.5)
+
+    def test_a_prediction_market_row_carries_no_book_terms(self):
+        self.add(record("kalshi", "FED1", price=62.0))
+        self.conn.execute(
+            "INSERT INTO matched_events (event_key, title, category, close_time, "
+            "confidence, possible, rules_differ, venue_count, gap, updated_at) "
+            "VALUES ('ev-abc', 'Fed', '', '', 95.0, 0, 0, 1, NULL, ?)",
+            (ISO,),
+        )
+        self.conn.execute(
+            "INSERT INTO matched_members (event_key, venue, market_id, outcome, "
+            "confidence, rules_differ, matched_on) VALUES ('ev-abc', 'kalshi', 'FED1', '', 95.0, 0, 'title')"
+        )
+        self.conn.commit()
+        self.export()
+        price = self.read("events", "ev-abc.json")["prices"][0]
+        self.assertIsNone(price["raw"])
+        self.assertIsNone(price["margin"])
+
+
 class PricesOnlyTest(ExportCase):
     """The 30 minute job: events and home, no catalog or search rebuild."""
 
@@ -515,7 +717,12 @@ class ExporterCliTest(ExportCase):
             ["--db", str(self.db), "--out", str(self.out)]
         )
         self.assertEqual(code, 0)
-        for name in ("home.json", "catalog/manifest.json", "search/index-1.json"):
+        for name in (
+            "home.json",
+            "events-index.json",
+            "catalog/manifest.json",
+            "search/index-0.json",
+        ):
             self.assertTrue((self.out / name).exists(), name)
 
     def test_main_reports_a_failure_without_leaking_a_secret(self):

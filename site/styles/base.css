@@ -1,21 +1,38 @@
-/* Base layer for Spread: reset, type, shell, and the shared primitives.
+/* Base layer for the wide Spread site: reset, type, the top-bar shell, and the
+ * shared primitives every page builds from.
  *
- * Rules this file enforces everywhere, from DESIGN.md and the site brief:
- *   - canvas is #101010 and nothing else is a page background
- *   - Geist at weight 400 (500 only for a label that must dominate)
- *   - buttons are 3px radius, never pills, never filled with an accent
- *   - no shadows anywhere, in any state
- *   - #ee6018 and #a0ca92 are data-voice colours: dots, strokes, labels only
+ * The language is DESIGN.md's, enforced here so no page has to remember it:
+ *   - the canvas is #101010 and nothing else is a page background
+ *   - the Founders face at weight 400 (500 only where a label must dominate);
+ *     Geist Mono carries every instrument label, per the type split
+ *   - buttons are 3px radius and never pills, never filled with an accent
+ *   - no shadows anywhere, in any state - depth comes from figure/ground
+ *   - #ee6018 and #a0ca92 are data-voice colours. They are used here only for
+ *     live/stale status and for the comparison bar on dark ground; inside the
+ *     light card the bar is drawn in the canvas black instead, because the
+ *     accents are not allowed on a card surface.
+ *   - one mechanical 0.15s switch for colour, background and border together
  *
- * Class inventory, so pages can be built without re-inventing anything:
- *   shell      .shell .sidebar .wordmark .nav .nav-item .nav-icon .moves
- *              .sidebar-foot .scrim .topbar .topbar-title .icon-button .content
- *   type       .label .display .headline .title .subhead .muted .mono
- *   surfaces   .card .card--light .card-head .card-grid .split .divider
- *   controls   .btn .btn--light .btn--ghost .input .select .segmented .segment
- *   data       .price .price--stale .stale-tag .stale-dot .gap .metric
- *              .stat-row .table .dots .spark .chart .bar
- *   motion     .enter .tick .pulse (all disabled under reduced motion)
+ * Class inventory, so a page can be written without inventing anything:
+ *   shell      .topbar .brand .brand-mark .topnav .topnav-link .modeswitch
+ *              .mode-btn .search .search-icon .search-input .search-key
+ *              .suggest .suggest-item .suggest-empty .content .sitefoot
+ *   type       .label .label--muted .label--strong .display .headline .title
+ *              .subhead .muted .tertiary .mono .big
+ *   surfaces   .card .card--light .card-head .grid .grid--2 .grid--3 .stack
+ *              .row .row--between .divider .page-head
+ *   results    .result .result-title .result-cat .result-count .result-gap
+ *              .result-flags .results-list .bar .bar-track .bar-span .bar-mark
+ *   comparison .strip .strip-group .strip-label .venue-line .venue-name
+ *              .venue-price .venue-bar .venue-note
+ *   controls   .btn .btn--light .btn--ghost .btn--on-light .input .select
+ *              .segmented .segment .chip .chips .filterbar .filterrow .pager
+ *              .key .tip
+ *   data       .price .price--stale .stale-tag .dot .gap .metric .metric-row
+ *              .metric-label .metric-value .stat-row .table .chart .legend
+ *              .empty .notice
+ *   notes      .note (a <details>) .note-body
+ *   motion     .enter .tick (both disabled under reduced motion)
  */
 
 /* --- Reset ------------------------------------------------------------ */
@@ -38,7 +55,9 @@ ol,
 dl,
 dd,
 fieldset,
-legend {
+legend,
+details,
+summary {
   margin: 0;
   padding: 0;
 }
@@ -81,30 +100,29 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   background-color: var(--color-obsidian-canvas);
   color: var(--color-bone);
   font-family: var(--font-geist);
   font-size: var(--text-body);
   font-weight: var(--font-weight-regular);
   line-height: var(--leading-body);
-  letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* One mechanical switch-flip for every interactive state, per the motion
- * rules: colour, background and border move together. Transform rides along
- * so a press can compress a control and let it spring back - feedback on
- * pointer-down, not on release. */
+/* One switch-flip for every interactive state, per the motion rules: colour,
+ * background and border move together. Transform rides along so a press can
+ * compress a control and let it spring back. */
 a,
 button,
 input,
 select,
-textarea,
-[role="button"],
+summary,
 .card,
-.nav-item,
-.moves-item tr {
+.chip,
+.result {
   transition: color var(--duration-fast) var(--ease-mechanical),
     background-color var(--duration-fast) var(--ease-mechanical),
     border-color var(--duration-fast) var(--ease-mechanical),
@@ -125,8 +143,8 @@ a:hover {
 }
 
 /* Keyboard focus must be visible on every control. :focus-visible alone is a
- * heuristic some engines do not fire for programmatic or scripted focus, so a
- * plain :focus rule backs it up - the ring is bone, never a new colour. */
+ * heuristic some engines do not fire for scripted focus, so a plain :focus
+ * rule backs it up - the ring is bone, never a new colour. */
 :focus-visible,
 a:focus,
 button:focus,
@@ -158,7 +176,6 @@ h4 {
   font-size: var(--text-display);
   line-height: var(--leading-display);
   letter-spacing: var(--tracking-display);
-  font-weight: var(--font-weight-regular);
 }
 
 .headline {
@@ -192,6 +209,17 @@ h4 {
   font-variant-numeric: tabular-nums;
 }
 
+/* The gap in Simple mode: the one number the page is about. */
+.big {
+  display: block;
+  font-family: var(--font-geist-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-heading-lg);
+  line-height: var(--leading-heading-lg);
+  letter-spacing: var(--tracking-heading-lg);
+  color: var(--color-bone);
+}
+
 /* The instrument voice: eyebrows, status labels, column headers. */
 .label {
   display: inline-block;
@@ -213,234 +241,310 @@ h4 {
   color: var(--color-bone);
 }
 
-/* --- Shell ------------------------------------------------------------ */
-.shell {
-  display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-  min-height: 100vh;
-}
-
-.sidebar {
+/* --- Shell: top bar --------------------------------------------------- */
+.topbar {
   position: sticky;
   top: 0;
-  align-self: start;
-  height: 100vh;
+  z-index: 20;
   display: flex;
-  flex-direction: column;
-  gap: var(--spacing-24);
-  padding: var(--spacing-24) var(--spacing-16);
+  align-items: center;
+  gap: var(--spacing-16);
+  min-height: var(--topbar-height);
+  padding: var(--spacing-8) var(--spacing-24);
   background-color: var(--color-obsidian-canvas);
-  border-right: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
 }
 
-.wordmark {
+.brand {
   display: inline-flex;
   align-items: center;
   gap: var(--spacing-8);
+  flex: none;
   font-family: var(--font-geist-mono);
   font-size: var(--text-caption);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--color-bone);
-}
-
-/* The brand kit's symbol, reversed for the dark canvas. Decorative: the
- * "Spread" text beside it carries the accessible name. */
-.wordmark-mark {
-  display: block;
-  height: 14px;
-  width: auto;
-}
-
-/* The full lockup, used once, on About. */
-.brand-lockup {
-  display: block;
-  width: min(200px, 60%);
-  height: auto;
-  margin-bottom: var(--spacing-16);
-}
-
-.nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-8);
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  font-size: var(--text-body-sm);
-  line-height: var(--leading-body-sm);
-  color: var(--color-bone);
   text-decoration: none;
 }
 
-.nav-item:hover {
-  background-color: var(--color-carbon-lift);
-  color: var(--color-chalk);
-}
-
-.nav-item[aria-current="page"] {
-  background-color: var(--color-carbon-lift);
-}
-
-.nav-icon {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 1.25;
-  opacity: 0.85;
-}
-
-.nav-item[aria-current="page"] .nav-icon {
-  opacity: 1;
-}
-
-/* Live moves widget: a readout of observed price changes, never "trades". */
-.moves {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-8);
-  padding-top: var(--spacing-16);
-  border-top: 1px solid var(--hairline);
-}
-
-.moves-head {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-8);
-}
-
-.moves-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.moves-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px var(--spacing-8);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.moves-item .moves-event {
-  color: var(--color-bone);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.moves-item .moves-venue {
-  color: var(--color-warm-granite);
-}
-
-.moves-item .moves-price {
-  grid-column: 1 / -1;
-  font-family: var(--font-geist-mono);
-  font-size: 11px;
-  color: var(--color-warm-granite);
-}
-
-.sidebar-foot {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-top: var(--spacing-16);
-  border-top: 1px solid var(--hairline);
-  font-size: var(--text-caption);
-  color: var(--color-warm-granite);
-}
-
-.sidebar-foot a {
-  color: var(--color-warm-granite);
-  text-decoration: underline;
-}
-
-.sidebar-foot a:hover {
-  color: var(--color-bone);
-}
-
-.main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-16);
-  height: var(--topbar-height);
-  padding: 0 var(--spacing-24);
-  background-color: var(--color-obsidian-canvas);
-  border-bottom: 1px solid var(--hairline);
-}
-
-.topbar-title {
-  font-size: var(--text-body-sm);
-  color: var(--color-bone);
-}
-
-/* The mark appears only when the sidebar is collapsed (see the narrow
- * layout), so the brand is present on a phone without being twice on a
- * desktop. */
-.topbar-mark {
-  display: none;
-  height: 14px;
+/* The brand kit's horizontal lockup, drawn in its own cream - it is the one
+ * asset allowed to carry a colour outside the palette, because it is the
+ * brand. It sits on the canvas, never on the light card. */
+.brand-mark {
+  height: 20px;
   width: auto;
 }
 
-.icon-button {
-  display: inline-flex;
+/* The wide search box, present on every page. It is the first thing a reader
+ * reaches for, so it takes the free width in the bar. */
+.search {
+  position: relative;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  background: none;
+  gap: var(--spacing-8);
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: var(--search-width);
+  height: 36px;
+  padding: 0 10px 0 12px;
+  background-color: var(--color-carbon-lift);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
+}
+
+.search:focus-within {
+  border-color: var(--color-ash-stroke);
+}
+
+.search-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  stroke: var(--color-warm-granite);
+  fill: none;
+  stroke-width: 1.4;
+}
+
+.search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  outline: none;
   color: var(--color-bone);
+  font-size: var(--text-body-sm);
+  /* A search field is a text input, not a heading: kill the tracking the
+   * generic input reset would not have applied anyway. */
+  appearance: none;
+}
+
+.search-input::placeholder {
+  color: var(--color-warm-granite);
+}
+
+.search-input:focus {
+  outline: none;
+}
+
+/* The keyboard hint for the "/" shortcut. */
+.key {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--color-ash-stroke);
+  border-radius: 2px;
+  color: var(--color-warm-granite);
+  font-family: var(--font-geist-mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* The type-ahead panel. Flat, hairline-bordered, no shadow: it is a surface
+ * rising one step above the canvas, not an overlay floating above it. */
+.suggest {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  max-height: min(60vh, 460px);
+  overflow-y: auto;
+  padding: var(--spacing-8);
+  background-color: var(--color-carbon-lift);
+  border: 1px solid var(--color-ash-stroke);
+  border-radius: var(--radius-cards);
+}
+
+.suggest-empty {
+  padding: var(--spacing-8) 10px;
+  color: var(--color-warm-granite);
+  font-size: var(--text-body-sm);
+}
+
+.suggest-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-8);
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-bone);
+  text-align: left;
   cursor: pointer;
 }
 
-.icon-button:hover {
+.suggest-item:hover,
+.suggest-item[aria-selected="true"] {
+  background-color: var(--color-obsidian-canvas);
+}
+
+.suggest-item .suggest-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-body-sm);
+}
+
+.suggest-item .suggest-meta {
+  flex: none;
+  font-family: var(--font-geist-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
+  color: var(--color-warm-granite);
+}
+
+.suggest-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-8);
+  margin-top: var(--spacing-8);
+  padding: 8px 10px 0;
+  border-top: 1px solid var(--hairline);
+  font-family: var(--font-geist-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
+  color: var(--color-warm-granite);
+}
+
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-16);
+  flex: none;
+  margin-left: auto;
+}
+
+.topnav-link {
+  font-family: var(--font-geist-mono);
+  font-size: var(--text-caption);
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
+  color: var(--color-warm-granite);
+  text-decoration: none;
+}
+
+.topnav-link:hover {
+  color: var(--color-bone);
+}
+
+.topnav-link[aria-current="page"] {
+  color: var(--color-bone);
+}
+
+/* Simple / Detailed. A segmented control, not a switch: both states are words
+ * a reader has to compare, and a track-and-knob would hide the other one. */
+.modeswitch {
+  display: inline-flex;
+  flex: none;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--color-ash-stroke);
+  border-radius: var(--radius-sm);
+}
+
+.mode-btn {
+  padding: 4px 9px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--color-warm-granite);
+  font-family: var(--font-geist-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.mode-btn:hover {
+  color: var(--color-bone);
+}
+
+.mode-btn[aria-pressed="true"] {
   background-color: var(--color-carbon-lift);
+  border-color: var(--color-ash-stroke);
+  color: var(--color-bone);
 }
 
-.icon-button svg {
-  width: 16px;
-  height: 16px;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 1.5;
-}
-
-/* The toggle only exists at narrow widths; wide layout shows the sidebar. */
-.topbar-toggle {
-  display: none;
-}
-
+/* --- Shell: content and footer ---------------------------------------- */
 .content {
   flex: 1;
   width: 100%;
   max-width: var(--page-max-width);
-  padding: var(--spacing-40) var(--spacing-24) var(--spacing-96);
+  margin: 0 auto;
+  padding: var(--spacing-40) var(--spacing-24) var(--spacing-80);
 }
 
-.scrim {
-  display: none;
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--spacing-24);
+  flex-wrap: wrap;
+  margin-bottom: var(--spacing-24);
+}
+
+.page-head .page-title {
+  font-size: var(--text-heading);
+  line-height: var(--leading-heading);
+  letter-spacing: var(--tracking-heading);
+}
+
+.sitefoot {
+  border-top: 1px solid var(--hairline);
+  padding: var(--spacing-24);
+  background-color: var(--color-obsidian-canvas);
+}
+
+.foot-inner {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-16);
+  flex-wrap: wrap;
+  max-width: var(--page-max-width);
+  margin: 0 auto;
+}
+
+.foot-caveat {
+  flex: 1 1 320px;
+  color: var(--color-warm-granite);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+}
+
+.foot-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-16);
+  flex-wrap: wrap;
+}
+
+.foot-nav a {
+  color: var(--color-warm-granite);
+  font-family: var(--font-geist-mono);
+  font-size: var(--text-caption);
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.foot-nav a:hover {
+  color: var(--color-bone);
+}
+
+.foot-meta {
+  color: var(--color-graphite-mid);
+  font-family: var(--font-geist-mono);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 /* --- Surfaces --------------------------------------------------------- */
@@ -458,8 +562,9 @@ h4 {
 }
 
 .card--light .label,
-.card--light .muted {
-  color: rgba(16, 16, 16, 0.62);
+.card--light .muted,
+.card--light .subhead {
+  color: var(--color-graphite-mid);
 }
 
 .card-head {
@@ -475,35 +580,18 @@ h4 {
   letter-spacing: -0.4px;
 }
 
-.card-grid {
+.grid {
   display: grid;
-  gap: var(--spacing-24);
-}
-
-/* Home: the ranked cards sit beside one featured light card. */
-.home-columns {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
   gap: var(--spacing-24);
   align-items: start;
 }
 
-.home-aside {
-  position: sticky;
-  top: calc(var(--topbar-height) + var(--spacing-24));
+.grid--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.split {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: var(--spacing-24);
-  align-items: start;
-}
-
-.divider {
-  border: 0;
-  border-top: 1px solid var(--hairline);
-  margin: var(--spacing-24) 0;
+.grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .stack {
@@ -525,6 +613,186 @@ h4 {
 
 .row--between {
   justify-content: space-between;
+}
+
+.divider {
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  margin: var(--spacing-24) 0;
+}
+
+/* --- The comparison bar ---------------------------------------------- *
+ * One line, the full 0-100 point scale, with the stretch between the lowest
+ * and highest comparable price filled in. It is a readout: no axis, no grid. */
+.bar {
+  position: relative;
+  display: block;
+  height: var(--bar-height);
+  width: 100%;
+  min-width: 60px;
+}
+
+.bar--lg {
+  height: 8px;
+}
+
+.bar-track {
+  position: absolute;
+  inset: 0;
+  background-color: var(--color-graphite-mid);
+  opacity: 0.45;
+  border-radius: 1px;
+}
+
+.bar-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: var(--color-metric-green);
+  border-radius: 1px;
+}
+
+/* A tick per venue, so a row with three prices shows three positions. */
+.bar-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background-color: var(--color-bone);
+  border-radius: 1px;
+}
+
+.card--light .bar-track {
+  background-color: var(--color-graphite-mid);
+  opacity: 0.35;
+}
+
+.card--light .bar-span {
+  background-color: var(--color-obsidian-canvas);
+}
+
+.card--light .bar-mark {
+  background-color: var(--color-obsidian-canvas);
+}
+
+/* --- Result rows ------------------------------------------------------ */
+.results-list {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.result {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 76px minmax(90px, 180px) 78px;
+  grid-template-areas: "cat title count bar gap";
+  align-items: center;
+  gap: 0 var(--spacing-16);
+  padding: 12px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.result-cat {
+  grid-area: cat;
+}
+
+.result-count {
+  grid-area: count;
+  font-family: var(--font-geist-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
+  color: var(--color-warm-granite);
+  white-space: nowrap;
+}
+
+.result-title {
+  grid-area: title;
+  min-width: 0;
+  font-size: var(--text-body-sm);
+  line-height: 1.35;
+  color: var(--color-bone);
+  text-decoration: none;
+}
+
+.result-title:hover {
+  color: var(--color-chalk);
+  text-decoration: underline;
+}
+
+.result-bar {
+  grid-area: bar;
+}
+
+.result-gap {
+  grid-area: gap;
+  text-align: right;
+  font-family: var(--font-geist-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-body-sm);
+  color: var(--color-bone);
+  white-space: nowrap;
+}
+
+.result-flags {
+  grid-column: 2 / -1;
+  display: flex;
+  gap: var(--spacing-8);
+  align-items: center;
+}
+
+/* --- Comparison strip (the event page's single light card) ------------ */
+.strip-group + .strip-group {
+  margin-top: var(--spacing-16);
+}
+
+.strip-label {
+  display: block;
+  margin-bottom: var(--spacing-8);
+  color: var(--color-graphite-mid);
+}
+
+.venue-line {
+  display: grid;
+  grid-template-columns: minmax(84px, 132px) minmax(60px, 1fr) 68px auto;
+  align-items: center;
+  gap: var(--spacing-8) var(--spacing-16);
+  padding: 9px 0;
+  border-top: 1px solid rgba(16, 16, 16, 0.14);
+}
+
+.strip-group .venue-line:first-of-type,
+.strip .venue-line:first-of-type {
+  border-top: 0;
+}
+
+.venue-name {
+  font-size: var(--text-body-sm);
+  color: var(--color-obsidian-canvas);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.venue-price {
+  text-align: right;
+  font-family: var(--font-geist-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-obsidian-canvas);
+}
+
+.venue-price--stale {
+  color: var(--color-graphite-mid);
+}
+
+.venue-note {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-graphite-mid);
+}
+
+.venue-note:empty {
+  display: none;
 }
 
 /* --- Controls --------------------------------------------------------- */
@@ -580,7 +848,13 @@ h4 {
   background-color: var(--color-carbon-lift);
 }
 
-.btn[disabled] {
+.btn--sm {
+  padding: 6px 10px;
+  font-size: var(--text-caption);
+}
+
+.btn[disabled],
+.btn[aria-disabled="true"] {
   color: var(--color-warm-granite);
   border-color: var(--hairline);
   background-color: transparent;
@@ -612,6 +886,11 @@ h4 {
   background-repeat: no-repeat;
 }
 
+.select--auto {
+  width: auto;
+  min-width: 190px;
+}
+
 .segmented {
   display: inline-flex;
   padding: 2px;
@@ -641,51 +920,213 @@ h4 {
   color: var(--color-bone);
 }
 
-.checkbox {
-  display: inline-flex;
-  align-items: center;
+.chips {
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--spacing-8);
-  font-size: var(--text-body-sm);
-  color: var(--color-bone);
+}
+
+.chip {
+  padding: 6px 10px;
+  background-color: transparent;
+  border: 1px solid var(--color-ash-stroke);
+  border-radius: var(--radius-sm);
+  color: var(--color-warm-granite);
+  font-family: var(--font-geist-mono);
+  font-size: var(--text-caption);
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
   cursor: pointer;
 }
 
-.checkbox input {
+.chip:hover {
+  color: var(--color-bone);
+  border-color: var(--color-graphite-mid);
+}
+
+.chip[aria-pressed="true"] {
+  background-color: var(--color-carbon-lift);
+  border-color: var(--color-graphite-mid);
+  color: var(--color-bone);
+}
+
+.filterbar {
+  display: grid;
+  gap: var(--spacing-16);
+  padding: var(--spacing-16) 0;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.filterrow {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-16);
+  flex-wrap: wrap;
+}
+
+.filterrow > .label {
+  flex: none;
+  min-width: 76px;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-16);
+  margin-top: var(--spacing-24);
+}
+
+.pager-status {
+  font-family: var(--font-geist-mono);
+  font-size: var(--text-caption);
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
+  color: var(--color-warm-granite);
+}
+
+/* --- Notes: the collapsed sections every page carries ---------------- *
+ * Native <details>, so it works without a line of script and lands in the
+ * tab order the way a reader expects. */
+.note {
+  border-top: 1px solid var(--hairline);
+}
+
+.note:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.note > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-8);
+  padding: 12px 0;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-geist-mono);
+  font-size: var(--text-caption);
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
+  color: var(--color-pale-stone);
+}
+
+.note > summary::-webkit-details-marker {
+  display: none;
+}
+
+.note > summary:hover {
+  color: var(--color-bone);
+}
+
+.note > summary .note-mark {
+  width: 12px;
+  flex: none;
+  color: var(--color-warm-granite);
+}
+
+.note[open] > summary .note-mark::before {
+  content: "–";
+}
+
+.note:not([open]) > summary .note-mark::before {
+  content: "+";
+}
+
+.note-body {
+  padding: 0 0 var(--spacing-16);
+  max-width: 78ch;
+  color: var(--color-warm-granite);
+  font-size: var(--text-body-sm);
+  line-height: 1.55;
+}
+
+.note-body p + p {
+  margin-top: var(--spacing-8);
+}
+
+.note-body strong {
+  font-weight: var(--font-weight-medium);
+  color: var(--color-pale-stone);
+}
+
+.note-body code {
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
+  color: var(--color-pale-stone);
+}
+
+.note-body ul {
+  margin-top: var(--spacing-8);
+  padding-left: 18px;
+  list-style: disc;
+}
+
+.note-body li {
+  margin-top: 4px;
+}
+
+/* --- Tooltips --------------------------------------------------------- *
+ * A small "i" that carries the sentence a paragraph used to. It is a real
+ * button-sized target with an aria-label, so it is reachable by keyboard and
+ * still readable when the tooltip cannot be shown. */
+.tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 14px;
   height: 14px;
-  accent-color: var(--color-carbon-lift);
+  flex: none;
+  border: 1px solid var(--color-ash-stroke);
+  border-radius: 50%;
+  color: var(--color-warm-granite);
+  font-family: var(--font-geist-mono);
+  font-size: 9px;
+  line-height: 1;
+  cursor: help;
+  vertical-align: 1px;
 }
 
-/* Dropdown panel for filters, anchored under its trigger. */
-.popover {
+.tip::after {
+  content: attr(data-tip);
   position: absolute;
-  z-index: 10;
-  margin-top: var(--spacing-8);
-  /* Anchored to its trigger's right edge, and never wider than the viewport:
-   * on a 390px screen a 340px panel hanging off the left of the button would
-   * push the whole page sideways (measured: 239px of horizontal overflow). */
-  right: 0;
-  width: min(340px, calc(100vw - 48px));
-  padding: var(--spacing-16);
+  z-index: 40;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(260px, 74vw);
+  padding: 8px 10px;
   background-color: var(--color-carbon-lift);
   border: 1px solid var(--color-ash-stroke);
-  border-radius: var(--radius-cards);
+  border-radius: var(--radius-sm);
+  color: var(--color-bone);
+  font-family: var(--font-geist);
+  font-size: 12px;
+  font-weight: var(--font-weight-regular);
+  line-height: 1.4;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: var(--spacing-16);
+.tip:hover::after,
+.tip:focus::after {
+  opacity: 1;
 }
 
-.field:last-child {
-  margin-bottom: 0;
+/* A tip at the right edge of a line opens leftwards instead of off-screen. */
+.tip--left::after {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
-.filter-anchor {
-  position: relative;
-  display: inline-block;
+.card--light .tip {
+  border-color: rgba(16, 16, 16, 0.35);
+  color: var(--color-graphite-mid);
 }
 
 /* --- Data ------------------------------------------------------------- */
@@ -701,23 +1142,29 @@ h4 {
 
 .stale-tag {
   display: inline-block;
-  font-family: var(--font-geist-mono);
-  font-size: 11px;
-  letter-spacing: var(--tracking-caption);
-  text-transform: uppercase;
-  color: var(--color-warm-granite);
+  flex: none;
+  padding: 1px 5px;
   border: 1px solid var(--color-ash-stroke);
   border-radius: var(--radius-sm);
-  padding: 1px 5px;
+  color: var(--color-warm-granite);
+  font-family: var(--font-geist-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: var(--tracking-caption);
+  text-transform: uppercase;
 }
 
-.stale-dot,
+.card--light .stale-tag {
+  border-color: rgba(16, 16, 16, 0.3);
+  color: var(--color-graphite-mid);
+}
+
 .dot {
   display: inline-block;
   width: 6px;
   height: 6px;
-  border-radius: 50%; /* a dot, not a pill button */
   flex: none;
+  border-radius: 50%; /* a dot, not a pill button */
 }
 
 .dot--live {
@@ -755,52 +1202,16 @@ h4 {
   color: var(--color-bone);
 }
 
-.gap--pos {
-  color: var(--color-metric-green);
-}
-
-.gap--neg {
-  color: var(--color-signal-orange);
-}
-
 .gap--none {
   color: var(--color-warm-granite);
 }
 
-/* Flex with wrap, not a fixed grid: a venue name, a price and a volume figure
- * do not fit on one line inside a 280px card, and an `auto` grid column lets
- * the long ones overlap instead of wrapping. */
-.venue-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px var(--spacing-8);
-  padding: 6px 0;
-  border-top: 1px solid var(--hairline);
-}
-
-.venue-row:first-of-type {
-  border-top: 0;
-}
-
-.venue-row .venue-name {
-  color: var(--color-warm-granite);
-  font-size: var(--text-body-sm);
-}
-
-.venue-row .price {
-  font-size: var(--text-body-sm);
-  margin-left: auto;
-}
-
-.venue-row .venue-vol {
-  font-size: 11px;
-  color: var(--color-warm-granite);
-  white-space: nowrap;
+.card--light .gap {
+  color: var(--color-obsidian-canvas);
 }
 
 .metric {
-  padding: var(--spacing-24) var(--spacing-24) var(--spacing-24) 0;
+  padding: var(--spacing-16) var(--spacing-24) var(--spacing-16) 0;
   border-left: 1px solid var(--hairline);
   padding-left: var(--spacing-24);
 }
@@ -818,13 +1229,9 @@ h4 {
   color: var(--color-bone);
 }
 
-.metric-value--stale {
-  color: var(--color-warm-granite);
-}
-
 .metric-label {
   display: block;
-  margin-bottom: var(--spacing-8);
+  margin-bottom: 6px;
 }
 
 .metric-row {
@@ -849,6 +1256,12 @@ h4 {
   border-top: 0;
 }
 
+.stat-row .stat-value {
+  font-family: var(--font-geist-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .table {
   width: 100%;
   text-align: left;
@@ -856,13 +1269,13 @@ h4 {
 
 .table th {
   padding: 0 var(--spacing-16) var(--spacing-8) 0;
+  border-bottom: 1px solid var(--hairline);
   font-family: var(--font-geist-mono);
   font-size: var(--text-caption);
   font-weight: var(--font-weight-regular);
   letter-spacing: var(--tracking-caption);
   text-transform: uppercase;
   color: var(--color-pale-stone);
-  border-bottom: 1px solid var(--hairline);
   white-space: nowrap;
 }
 
@@ -883,19 +1296,6 @@ h4 {
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
-}
-
-.spark {
-  width: 100%;
-  height: var(--sparkline-height);
-}
-
-.spark path {
-  fill: none;
-  stroke-width: 1;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-  vector-effect: non-scaling-stroke;
 }
 
 .chart {
@@ -927,7 +1327,7 @@ h4 {
 .legend {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--spacing-16);
+  gap: var(--spacing-8) var(--spacing-16);
   margin-top: var(--spacing-16);
 }
 
@@ -944,21 +1344,13 @@ h4 {
 
 .legend-swatch {
   width: 14px;
-  height: 1px;
+  height: 0;
   border-top-width: 1px;
   border-top-style: solid;
 }
 
 .legend-swatch--dashed {
   border-top-style: dashed;
-}
-
-.pager {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-16);
-  margin-top: var(--spacing-24);
 }
 
 .empty {
@@ -969,10 +1361,16 @@ h4 {
   font-size: var(--text-body-sm);
 }
 
+.empty .label {
+  display: block;
+  margin-bottom: 6px;
+}
+
 .notice {
   display: flex;
+  align-items: baseline;
   gap: var(--spacing-8);
-  padding: var(--spacing-16) var(--spacing-24);
+  padding: var(--spacing-16) 0;
   border-top: 1px solid var(--hairline);
   color: var(--color-warm-granite);
   font-size: var(--text-caption);
@@ -982,6 +1380,11 @@ h4 {
 .notice strong {
   font-weight: var(--font-weight-medium);
   color: var(--color-pale-stone);
+}
+
+/* Table-heavy pages need a horizontal escape hatch on small screens. */
+.scroll-x {
+  overflow-x: auto;
 }
 
 /* --- Motion ----------------------------------------------------------- */
@@ -994,19 +1397,19 @@ h4 {
     animation: tick 0.5s var(--ease-mechanical) 1;
   }
 
-  /* A pressed control compresses the instant the pointer goes down and
-   * springs back on release, so the click feels answered before it commits. */
-  .icon-button:active,
+  /* A pressed control compresses on pointer-down and springs back on
+   * release, so the click feels answered before it commits. */
   .btn:active,
+  .chip:active,
   .segment:active,
-  .nav-item:active {
+  .mode-btn:active,
+  .suggest-item:active {
     transform: scale(0.97);
   }
 
-  /* A popover grows out of the corner nearest its trigger, so it reads as
-   * coming from that button rather than from the middle of the page. */
-  .popover {
-    transform-origin: bottom right;
+  /* A dropdown grows out of the box it belongs to. */
+  .suggest {
+    transform-origin: top center;
     animation: popover-in var(--duration-fast) var(--ease-mechanical) both;
   }
 }
@@ -1014,7 +1417,7 @@ h4 {
 @keyframes popover-in {
   from {
     opacity: 0;
-    transform: scale(0.97);
+    transform: scale(0.98);
   }
   to {
     opacity: 1;
@@ -1042,64 +1445,48 @@ h4 {
   }
 }
 
-/* --- Narrow layout ---------------------------------------------------- */
-@media (max-width: 800px) {
-  .shell {
-    grid-template-columns: minmax(0, 1fr);
+/* --- Narrow layout ---------------------------------------------------- *
+ * The top bar becomes two rows: brand and mode on the first, the search box
+ * and the nav on the second. The search box stays full width, because it is
+ * the way into the site. */
+@media (max-width: 900px) {
+  .topbar {
+    flex-wrap: wrap;
+    gap: var(--spacing-8) var(--spacing-16);
+    padding: var(--spacing-8) var(--spacing-16);
   }
 
-  .sidebar {
-    position: fixed;
-    z-index: 20;
-    top: 0;
-    left: 0;
-    width: min(280px, 84vw);
-    border-right: 1px solid var(--hairline);
-    transform: translateX(-100%);
+  .search {
+    order: 3;
+    flex: 1 1 100%;
+    max-width: none;
+    order: 3;
   }
 
-  @media (prefers-reduced-motion: no-preference) {
-    .sidebar {
-      transition: transform var(--duration-enter) var(--ease-mechanical);
-    }
+  .topnav {
+    order: 4;
+    flex: 1 1 100%;
+    margin-left: 0;
+    gap: var(--spacing-16);
+    /* A single scrollable line of links beats an off-canvas menu on a phone,
+     * and it needs no script. */
+    overflow-x: auto;
+    padding-bottom: 2px;
   }
 
-  body[data-sidebar="open"] .sidebar {
-    transform: translateX(0);
-  }
-
-  .topbar-toggle {
-    display: inline-flex;
-  }
-
-  .topbar-mark {
-    display: block;
-  }
-
-  .scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 10;
-    background-color: rgba(16, 16, 16, 0.72);
-  }
-
-  body[data-sidebar="open"] .scrim {
-    display: block;
+  .modeswitch {
+    margin-left: auto;
   }
 
   .content {
-    padding: var(--spacing-24) var(--spacing-16) var(--spacing-80);
+    padding: var(--spacing-24) var(--spacing-16) var(--spacing-56);
   }
 
-  .split,
-  .metric-row,
-  .home-columns {
+  .grid--2,
+  .grid--3,
+  .metric-row {
     grid-template-columns: minmax(0, 1fr);
     grid-auto-flow: row;
-  }
-
-  .home-aside {
-    position: static;
   }
 
   .metric {
@@ -1112,6 +1499,19 @@ h4 {
     border-top: 0;
   }
 
+  .result {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "cat   count"
+      "title title"
+      "bar   gap";
+    gap: 6px var(--spacing-16);
+  }
+
+  .bar {
+    min-width: 0;
+  }
+
   .display {
     font-size: 40px;
     letter-spacing: -1.6px;
@@ -1122,40 +1522,49 @@ h4 {
     letter-spacing: -0.9px;
   }
 
-  .card-grid--3 {
-    grid-template-columns: minmax(0, 1fr);
+  .venue-line {
+    grid-template-columns: minmax(0, 1fr) 62px auto;
+    grid-template-areas:
+      "name price stale"
+      "bar  bar   bar";
+  }
+
+  .venue-name {
+    grid-area: name;
+  }
+
+  .venue-price {
+    grid-area: price;
+  }
+
+  .venue-bar {
+    grid-area: bar;
+  }
+
+  .venue-line .stale-tag {
+    grid-area: stale;
+  }
+
+  .filterrow > .label {
+    min-width: 0;
   }
 }
 
-@media (min-width: 801px) {
-  .card-grid--3 {
+@media (min-width: 901px) {
+  .grid--3 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-@media (min-width: 801px) and (max-width: 1180px) {
-  .card-grid--3 {
+@media (min-width: 901px) and (max-width: 1180px) {
+  .grid--3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .home-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .home-aside {
-    position: static;
-  }
-}
-
-/* Table-heavy pages need a horizontal escape hatch on small screens. */
-.scroll-x {
-  overflow-x: auto;
 }
 
 @media print {
-  .sidebar,
   .topbar,
-  .scrim {
+  .sitefoot {
     display: none;
   }
 }

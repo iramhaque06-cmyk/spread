@@ -7,9 +7,10 @@ artifacts work rather than only that they exist.
 
 The contract, in the order a client uses it:
 
-1. Fetch ``search/index-1.json``. It is the only file loaded up front, and it
+1. Fetch ``search/index-0.json``. It is the only file loaded up front, and it
    carries the dictionary: ``tokens`` maps a token to the shard (or shards)
    holding its postings, and ``bounds`` lists each shard's alphabet range.
+   Shards are numbered from zero, so ``index-0.json`` is the entry point.
 2. To search, normalize the typed text, then fetch the shards named for its
    tokens and intersect the posting lists. Nothing else is loaded.
 3. A posting is a market key, ``"<venue>:<market_id>"``. To show it, resolve
@@ -40,13 +41,13 @@ class Index:
 
     def __init__(self, data_dir):
         self.data_dir = Path(data_dir)
-        self.first = self._read("search", "index-1.json")
+        self.first = self._read("search", "index-0.json")
         self.tokens = self.first.get("tokens") or {}
         self.bounds = self.first.get("bounds") or []
         self.vocab = self.first.get("vocab", len(self.tokens))
         self.markets = self.first.get("markets", 0)
-        self._loaded = {"search/index-1.json"}
-        self._postings = {1: self.first.get("postings") or {}}
+        self._loaded = {"search/index-0.json"}
+        self._postings = {0: self.first.get("postings") or {}}
         self.manifest = self._read("catalog", "manifest.json")
         self._catalog: dict[str, dict] = {}
 
@@ -80,7 +81,7 @@ class Index:
             return list(found)
         # Not in the dictionary: fall back to the alphabet range, so a token
         # that only appears as part of a longer one still resolves.
-        return [number for number, (low, high) in enumerate(self.bounds, start=1)
+        return [number for number, (low, high) in enumerate(self.bounds)
                 if low <= token <= high]
 
     # -- searching -------------------------------------------------------- #

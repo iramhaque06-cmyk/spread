@@ -207,6 +207,47 @@ class GapTest(unittest.TestCase):
         )
         self.assertEqual(gaps.gap(points), 5.0)
 
+    def test_a_venue_quoting_two_markets_is_not_a_gap_in_itself(self):
+        """Two prices from one venue are two questions, not a disagreement.
+
+        The rule has always asked for two venues; comparing a venue's own
+        markets with each other turned a mis-matched group of nine Polymarket
+        governor races into a 98 point "gap".
+        """
+        points = gaps.event_prices(
+            [{"venue": "polymarket", "market_id": "a", "outcome": ""},
+             {"venue": "polymarket", "market_id": "b", "outcome": ""}],
+            {
+                ("polymarket", "a"): self.row(
+                    "polymarket", "prediction_market", 1.0, market_id="a"
+                ),
+                ("polymarket", "b"): self.row(
+                    "polymarket", "prediction_market", 97.0, market_id="b"
+                ),
+            },
+        )
+        self.assertEqual(len(points), 2)
+        self.assertIsNone(gaps.gap(points))
+
+    def test_a_second_venue_makes_it_a_gap_again(self):
+        points = gaps.event_prices(
+            [{"venue": "kalshi", "market_id": "a", "outcome": ""},
+             {"venue": "polymarket", "market_id": "b", "outcome": ""},
+             {"venue": "polymarket", "market_id": "c", "outcome": ""}],
+            {
+                ("kalshi", "a"): self.row(
+                    "kalshi", "prediction_market", 10.0, market_id="a"
+                ),
+                ("polymarket", "b"): self.row(
+                    "polymarket", "prediction_market", 20.0, market_id="b"
+                ),
+                ("polymarket", "c"): self.row(
+                    "polymarket", "prediction_market", 30.0, market_id="c"
+                ),
+            },
+        )
+        self.assertEqual(gaps.gap(points), 20.0)
+
     def test_play_money_never_enters_a_gap(self):
         points = gaps.event_prices(
             [{"venue": "kalshi", "market_id": "kalshi-1", "outcome": ""},

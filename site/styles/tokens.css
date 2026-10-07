@@ -6,17 +6,13 @@
  * every one of them is either a layout measurement or a value already in the
  * palette - no new colours, no new accents.
  *
- * The font loader is an @import rather than a <link> in seven page heads, so
- * there is exactly one place where the site's faces are loaded.
- *
- * Brand update: Instrument Sans is the face of the Spread wordmark (logo
- * sheet), so it now carries everything --font-geist names - display, headings,
- * body and UI - while Geist Mono keeps every instrument label, which is the
- * split DESIGN.md calls structural. Geist stays in the fallback stack after
- * Instrument Sans, exactly as DESIGN.md writes it, so a missing webfont
- * degrades to the spec's own stack rather than to a system default.
+ * No webfont is loaded. The logo kit carries no font file - the wordmark is
+ * outlines in spread-horizontal.svg - so there is nothing to self-host, and an
+ * @import from a font CDN would put a third-party request on every page load.
+ * The stacks below therefore resolve to the system faces. Geist and Geist Mono
+ * stay named in front of them, exactly as DESIGN.md writes them, so the spec's
+ * own faces are used the moment they are installed or later self-hosted.
  */
-@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400&family=Instrument+Sans:wght@400;500&display=swap");
 
 :root {
   /* Colors */
@@ -32,11 +28,11 @@
   --color-metric-green: #a0ca92;
 
   /* Typography — Font Families
-   * DEVIATION from DESIGN.md, on the brand kit: 'Instrument Sans' leads the
-   * stack (the wordmark's own face, open licence) with 'Geist' second. Swap
-   * the two words to go back to a Geist-only site.
+   * DEVIATION from DESIGN.md, on the brief: the named faces are not fetched, so
+   * each stack falls through to the platform's own UI and mono faces. The
+   * named faces come first, so a machine that has them gets them.
    */
-  --font-geist: 'Instrument Sans', 'Geist', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-geist: 'Geist', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-geist-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   /* Typography — Scale */
@@ -101,10 +97,12 @@
    * carbon lift; --color-ash-stroke stays available for ghost outlines.
    */
   --hairline: var(--color-carbon-lift);
-  --sidebar-width: 240px;
-  --topbar-height: 56px;
-  --breakpoint-narrow: 800px;
+  --topbar-height: 64px;
+  --search-width: 520px;
+  --breakpoint-narrow: 900px;
   --sparkline-height: 40px;
+  /* The comparison bar is 6px tall and full-width: a readout, not a chart. */
+  --bar-height: 6px;
 
   /* Motion: short and mechanical, never springy. */
   --duration-fast: 0.15s;

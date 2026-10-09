@@ -52,13 +52,19 @@ PRICE_FETCHERS = {
     "odds_api": odds_api.get_prices,
 }
 TOP_BY_VOLUME = 500
-MATCH_BATCH = 40000  # records matched per pass, bounded so a run stays sane
 
 
 def sync_catalog(
     conn, *, venues_wanted=None, limit=None, max_age=None, now=None
 ) -> dict:
-    """Upsert every open market from each venue; close what disappeared."""
+    """Upsert every open market from each venue; close what disappeared.
+
+    Closing is a separate decision from upserting, and it is made after the
+    listing has been judged: a failed listing, a bounded one, or one that saw
+    suspiciously few markets closes nothing at all
+    (:func:`store.mark_missing_closed`). A venue being down must never take
+    its markets down with it.
+    """
     report = {}
     wanted = venues_wanted or list(CATALOG_VENUES)
     for venue in wanted:
@@ -81,11 +87,15 @@ def sync_catalog(
                     batch = []
             if batch:
                 store.upsert_markets(conn, batch, now=_stamp(now))
-            closed = store.mark_missing_closed(conn, venue, seen, now=_stamp(now))
         except Exception as exc:  # one venue must never sink the run
             errors = envfile.redact(exc)
-            closed = 0
             print(f"warning: {venue} catalog failed: {errors}", file=sys.stderr)
+        refused = store.close_refusal_reason(
+            conn, venue, len(seen), limit=limit, error=errors
+        )
+        closed = store.mark_missing_closed(
+            conn, venue, seen, limit=limit, error=errors
+        )
         counts = store.market_counts(conn).get(venue, {})
         store.set_catalog_state(
             conn,
@@ -93,23 +103,62 @@ def sync_catalog(
             last_catalog_ok_at="" if errors else _stamp(now),
             markets=counts.get("open", 0),
             errors=errors,
-            notes=f"listed={len(seen)} closed={closed} in {time.time() - started:.1f}s",
+            notes=(
+                f"listed={len(seen)} closed={closed} in {time.time() - started:.1f}s"
+                + (f" kept open: {refused}" if refused else "")
+            ),
         )
         report[venue] = {
             "listed": len(seen),
             "open": counts.get("open", 0),
             "closed": closed,
+            "refused": refused,
             "errors": errors,
         }
     return report
 
 
 def run_matching(conn, *, limit=None, now=None) -> dict:
-    """Match the stored open markets and replace the matched tables."""
-    rows = store.read_markets(conn, open_only=True, limit=limit or MATCH_BATCH)
+    """Match the stored open markets and replace the matched tables.
+
+    The whole open catalog is matched, not a slice: a bounded pass would
+    leave the events it never saw without their counterparts, and "no gap"
+    would quietly mean "not looked at".
+
+    Each event's ``published`` verdict is decided here from the same rule
+    :mod:`gaps` uses for the gap: confident, and two distinct real-money
+    venues with a fresh price. It is stored now rather than left to the price
+    pass so that a match-only run still records which comparisons are real.
+    """
+    rows = store.read_markets(conn, open_only=True, limit=limit)
+    markets_by_key = {(row["venue"], row["market_id"]): row for row in rows}
     matches = matching.match_markets(rows)
     events, members = [], []
     for match in matches:
+        event_members = [
+            {
+                "event_key": match.event_key,
+                "venue": venue,
+                "market_id": market_id,
+                "outcome": outcome,
+                "confidence": confidence,
+                "rules_differ": rules_differ,
+                "matched_on": matched_on,
+                "inverted": inverted,
+            }
+            for (
+                venue,
+                market_id,
+                outcome,
+                confidence,
+                rules_differ,
+                matched_on,
+                inverted,
+            ) in match.members
+        ]
+        summary = gaps.summarise(
+            gaps.event_prices(event_members, markets_by_key, now=now)
+        )
         events.append(
             {
                 "event_key": match.event_key,
@@ -118,24 +167,14 @@ def run_matching(conn, *, limit=None, now=None) -> dict:
                 "close_time": match.close_time,
                 "confidence": match.confidence,
                 "possible": 1 if match.possible else 0,
+                "published": 1 if summary["published"] and not match.possible else 0,
                 "rules_differ": 1 if match.rules_differ else 0,
                 "venue_count": len({member[0] for member in match.members}),
                 "gap": None,
                 "updated_at": _stamp(now),
             }
         )
-        for venue, market_id, outcome, confidence, rules_differ, matched_on in match.members:
-            members.append(
-                {
-                    "event_key": match.event_key,
-                    "venue": venue,
-                    "market_id": market_id,
-                    "outcome": outcome,
-                    "confidence": confidence,
-                    "rules_differ": rules_differ,
-                    "matched_on": matched_on,
-                }
-            )
+        members.extend(event_members)
     store.replace_matching(conn, events, members)
     confident = [match for match in matches if not match.possible]
     return {
@@ -208,12 +247,18 @@ def refresh_prices(conn, *, top=TOP_BY_VOLUME, max_age=None, now=None) -> dict:
 
 
 def compute_gaps(conn, *, now=None, include_possible: bool = False) -> dict:
-    """Store the gap on each matched event, from fresh real-money prices only."""
+    """Store the gap and the published verdict on each matched event.
+
+    Both come from :func:`gaps.summarise` on fresh real-money prices only,
+    which is the one place that rule lives: a gap needs two fresh real-money
+    venues, and so does being published.
+    """
     rows = store.read_markets(conn, open_only=True)
     by_key = {(row["venue"], row["market_id"]): row for row in rows}
     events = store.read_matched_events(conn, include_possible=include_possible)
     updated = 0
     none_yet = 0
+    published = 0
     for event in events:
         members = store.read_members(conn, event["event_key"])
         summary = gaps.summarise(
@@ -221,13 +266,20 @@ def compute_gaps(conn, *, now=None, include_possible: bool = False) -> dict:
         )
         if summary["gap"] is None:
             none_yet += 1
+        live = 1 if summary["published"] and not event["possible"] else 0
+        published += live
         conn.execute(
-            "UPDATE matched_events SET gap = ? WHERE event_key = ?",
-            (summary["gap"], event["event_key"]),
+            "UPDATE matched_events SET gap = ?, published = ? WHERE event_key = ?",
+            (summary["gap"], live, event["event_key"]),
         )
         updated += 1
     conn.commit()
-    return {"events": updated, "with_gap": updated - none_yet, "without_gap": none_yet}
+    return {
+        "events": updated,
+        "with_gap": updated - none_yet,
+        "without_gap": none_yet,
+        "published": published,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,14 +1,20 @@
 """Offline tests for the multi-venue catalog layer (no network anywhere)."""
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
 import envfile
 import store
 from venues import MarketRecord, kalshi, manifold, odds_api, polymarket
+
+# Every timestamp a test writes is this instant, never the wall clock.
+NOW = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
 
 
 class EnvFileTest(unittest.TestCase):
@@ -487,21 +493,138 @@ class StoreCatalogTest(unittest.TestCase):
         self.assertEqual(order, ["big", "small"])
 
     def test_a_market_missing_from_a_full_pass_is_closed_not_deleted(self):
-        store.upsert_markets(
-            self.conn, [self.record("gone"), self.record("stays")]
-        )
-        closed = store.mark_missing_closed(self.conn, "kalshi", ["stays"])
+        ids = ["gone", "stays", "a", "b", "c"]
+        store.upsert_markets(self.conn, [self.record(market_id) for market_id in ids])
+        # A full pass that listed 4 of the 5 open markets: one really went away.
+        closed = store.mark_missing_closed(self.conn, "kalshi", ids[1:])
         self.assertEqual(closed, 1)
         rows = {
             row["market_id"]: row
             for row in store.read_markets(self.conn, open_only=False)
         }
         self.assertFalse(rows["gone"]["is_open"])
-        self.assertTrue(rows["stays"]["is_open"])
+        for market_id in ids[1:]:
+            self.assertTrue(rows[market_id]["is_open"])
         # The open-only read the site uses no longer lists it...
-        self.assertEqual([row["market_id"] for row in store.read_markets(self.conn)], ["stays"])
+        self.assertEqual(
+            [row["market_id"] for row in store.read_markets(self.conn)],
+            ["a", "b", "c", "stays"],
+        )
         # ...but nothing was deleted.
-        self.assertEqual(len(store.read_markets(self.conn, open_only=False)), 2)
+        self.assertEqual(len(store.read_markets(self.conn, open_only=False)), 5)
+
+    def test_a_bounded_listing_never_closes_anything(self):
+        """A --limit run sees a slice by construction, so absence proves nothing."""
+        store.upsert_markets(self.conn, [self.record("gone"), self.record("stays")])
+        self.assertEqual(
+            store.mark_missing_closed(self.conn, "kalshi", ["stays"], limit=500), 0
+        )
+        rows = {
+            row["market_id"]: row
+            for row in store.read_markets(self.conn, open_only=False)
+        }
+        self.assertTrue(rows["gone"]["is_open"])
+
+    def test_a_listing_that_failed_never_closes_anything(self):
+        store.upsert_markets(self.conn, [self.record("gone"), self.record("stays")])
+        self.assertEqual(
+            store.mark_missing_closed(self.conn, "kalshi", ["stays"], error="timed out"),
+            0,
+        )
+        rows = {
+            row["market_id"]: row
+            for row in store.read_markets(self.conn, open_only=False)
+        }
+        self.assertTrue(rows["gone"]["is_open"])
+
+    def test_a_listing_under_the_floor_never_closes_anything(self):
+        """A truncated or half-parsed listing looks like a mass disappearance.
+
+        Four of these eight markets are "missing" from the listing below. An
+        ungated closing pass would resolve half the venue on the strength of a
+        response that only proves the venue answered.
+        """
+        ids = ["a", "b", "c", "d", "gone-1", "gone-2", "gone-3", "gone-4"]
+        store.upsert_markets(self.conn, [self.record(market_id) for market_id in ids])
+        self.assertEqual(store.mark_missing_closed(self.conn, "kalshi", ids[:4]), 0)
+        self.assertEqual(
+            {row["market_id"] for row in store.read_markets(self.conn)}, set(ids)
+        )
+
+    def test_closing_a_market_never_rewrites_its_last_seen_at(self):
+        """Closing is not an observation, so it must not stamp one.
+
+        ``last_seen_at`` records when the venue actually listed the market.
+        Writing the closing time there would claim a sighting that never
+        happened and erase when it was last really seen.
+        """
+        ids = ["gone", "stays", "a", "b", "c"]
+        store.upsert_markets(
+            self.conn,
+            [self.record(market_id) for market_id in ids],
+            now="2026-10-07T00:00:00+00:00",
+        )
+        before = {
+            row["market_id"]: row["last_seen_at"]
+            for row in store.read_markets(self.conn, open_only=False)
+        }
+        self.assertEqual(store.mark_missing_closed(self.conn, "kalshi", ids[1:]), 1)
+        after = {
+            row["market_id"]: row
+            for row in store.read_markets(self.conn, open_only=False)
+        }
+        self.assertFalse(after["gone"]["is_open"])
+        self.assertEqual(after["gone"]["last_seen_at"], before["gone"])
+        for market_id in ids[1:]:
+            self.assertEqual(after[market_id]["last_seen_at"], before[market_id])
+
+    def test_the_close_guard_says_why_it_refused(self):
+        store.upsert_markets(self.conn, [self.record("a"), self.record("b")])
+        self.assertIn(
+            "bounded", store.close_refusal_reason(self.conn, "kalshi", 0, limit=10)
+        )
+        self.assertIn(
+            "error", store.close_refusal_reason(self.conn, "kalshi", 0, error="boom")
+        )
+        self.assertIn("under 80%", store.close_refusal_reason(self.conn, "kalshi", 1))
+        self.assertEqual(store.close_refusal_reason(self.conn, "kalshi", 2), "")
+        # A venue with nothing stored has nothing to lose either way.
+        self.assertEqual(store.close_refusal_reason(self.conn, "manifold", 0), "")
+
+    def test_sync_catalog_closes_nothing_on_a_bounded_or_failed_listing(self):
+        """The catalog loop must not close what a partial listing left out."""
+        import catalog
+
+        store.upsert_markets(self.conn, [self.record("gone"), self.record("stays")])
+
+        def bounded(limit=None):
+            return [self.record("stays")]
+
+        with mock.patch.dict(catalog.CATALOG_VENUES, {"kalshi": bounded}):
+            report = catalog.sync_catalog(
+                self.conn, venues_wanted=["kalshi"], limit=1, now=NOW
+            )
+        self.assertEqual(report["kalshi"]["closed"], 0)
+        self.assertIn("bounded", report["kalshi"]["refused"])
+        self.assertEqual(
+            {row["market_id"] for row in store.read_markets(self.conn)},
+            {"gone", "stays"},
+        )
+
+        def broken(limit=None):
+            raise RuntimeError("kalshi said no")
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            with mock.patch.dict(catalog.CATALOG_VENUES, {"kalshi": broken}):
+                report = catalog.sync_catalog(
+                    self.conn, venues_wanted=["kalshi"], now=NOW
+                )
+        self.assertEqual(report["kalshi"]["closed"], 0)
+        self.assertIn("kalshi said no", report["kalshi"]["errors"])
+        self.assertEqual(
+            {row["market_id"] for row in store.read_markets(self.conn)},
+            {"gone", "stays"},
+        )
 
     def test_counts_report_per_venue(self):
         store.upsert_markets(

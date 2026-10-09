@@ -133,6 +133,12 @@ CREATE INDEX IF NOT EXISTS markets_volume
 CREATE INDEX IF NOT EXISTS markets_close
     ON markets (is_open, close_time);
 
+-- ``published`` is the matcher's verdict that this comparison may be shown as
+-- a real one: a confident match (not ``possible``) with at least two distinct
+-- real-money venues quoting a fresh price. A play-money or forecast venue may
+-- attach to the event but never counts toward those two.
+-- ``matched_members.inverted`` marks the side of an above/below pair whose
+-- price has to be read as ``100 - price`` before the two can be compared.
 CREATE TABLE IF NOT EXISTS matched_events (
     event_key    TEXT PRIMARY KEY,
     title        TEXT NOT NULL DEFAULT '',
@@ -140,6 +146,7 @@ CREATE TABLE IF NOT EXISTS matched_events (
     close_time   TEXT NOT NULL DEFAULT '',
     confidence   REAL NOT NULL DEFAULT 0,
     possible     INTEGER NOT NULL DEFAULT 0,
+    published    INTEGER NOT NULL DEFAULT 0,
     rules_differ INTEGER NOT NULL DEFAULT 0,
     venue_count  INTEGER NOT NULL DEFAULT 0,
     gap          REAL,
@@ -154,6 +161,7 @@ CREATE TABLE IF NOT EXISTS matched_members (
     confidence   REAL NOT NULL DEFAULT 0,
     rules_differ INTEGER NOT NULL DEFAULT 0,
     matched_on   TEXT NOT NULL DEFAULT '',
+    inverted     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (event_key, venue, market_id)
 );
 
@@ -217,6 +225,12 @@ ADDED_COLUMNS = {
         "fetched_at": "TEXT NOT NULL DEFAULT ''",
         "rules_text": "TEXT NOT NULL DEFAULT ''",
         "resolves_at": "TEXT NOT NULL DEFAULT ''",
+    },
+    "matched_events": {
+        "published": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "matched_members": {
+        "inverted": "INTEGER NOT NULL DEFAULT 0",
     },
 }
 
@@ -557,15 +571,72 @@ def upsert_markets(conn: sqlite3.Connection, records, *, now: str | None = None)
     return len(rows)
 
 
+# A listing that saw less than this share of a venue's open markets is not
+# evidence that the rest disappeared; it is evidence that the listing is
+# truncated, half-rate-limited or half-parsed.
+CLOSE_FLOOR = 0.8
+
+
+def close_refusal_reason(
+    conn: sqlite3.Connection,
+    venue: str,
+    listed: int,
+    *,
+    limit: int | None = None,
+    error: str = "",
+) -> str:
+    """Why closing `venue`'s missing markets must be refused, or ``""``.
+
+    Only a whole listing proves a market is gone, so a pass that cannot show
+    it saw the venue is not allowed to close anything:
+
+    * ``error`` — the listing raised, so what arrived is partial at best;
+    * ``limit`` — the listing was a bounded slice by construction;
+    * ``listed`` under :data:`CLOSE_FLOOR` of the venue's open markets — what a
+      truncated response, a rate limit or a schema change looks like.
+
+    The reason is a sentence for a run log, not an error: the markets simply
+    stay open for the next pass that can see the whole venue.
+    """
+    if error:
+        return "the listing raised an error, so nothing was closed"
+    if limit is not None:
+        return f"the listing was bounded to {limit}, so nothing was closed"
+    open_now = conn.execute(
+        "SELECT COUNT(*) FROM markets WHERE venue = ? AND is_open = 1", (venue,)
+    ).fetchone()[0]
+    if open_now and listed < CLOSE_FLOOR * open_now:
+        return (
+            f"listed {listed} of {open_now} open markets, under "
+            f"{CLOSE_FLOOR:.0%}, so nothing was closed"
+        )
+    return ""
+
+
 def mark_missing_closed(
-    conn: sqlite3.Connection, venue: str, seen, *, now: str | None = None
+    conn: sqlite3.Connection,
+    venue: str,
+    seen,
+    *,
+    limit: int | None = None,
+    error: str = "",
 ) -> int:
     """Mark everything of `venue` that a full catalog pass did not see.
 
     Rows are never deleted: a market that closed last week still has history,
     and the site says "resolved" rather than forgetting it existed.
+
+    Closing is refused outright when the pass cannot prove it saw the whole
+    venue (:func:`close_refusal_reason`) — a bounded or failed listing leaves
+    every market open rather than closing most of a catalog. A closed row also
+    keeps its ``last_seen_at``: that column records the last time the market
+    was actually observed, and a pass that did not see it has nothing to
+    record there. Writing the closing time would claim an observation that
+    never happened and erase when the market was last really seen.
     """
     seen = list(seen)
+    if close_refusal_reason(conn, venue, len(seen), limit=limit, error=error):
+        return 0
     conn.execute("DROP TABLE IF EXISTS temp._seen_markets")
     conn.execute("CREATE TEMP TABLE _seen_markets (market_id TEXT PRIMARY KEY)")
     conn.executemany(
@@ -573,10 +644,10 @@ def mark_missing_closed(
         ((str(market_id),) for market_id in seen),
     )
     cursor = conn.execute(
-        "UPDATE markets SET is_open = 0, last_seen_at = ? "
+        "UPDATE markets SET is_open = 0 "
         "WHERE venue = ? AND is_open = 1 AND market_id NOT IN "
         "(SELECT market_id FROM _seen_markets)",
-        (now or _now(), venue),
+        (venue,),
     )
     conn.execute("DROP TABLE _seen_markets")
     conn.commit()
@@ -773,17 +844,23 @@ def replace_matching(conn: sqlite3.Connection, events, members) -> tuple[int, in
 
     Matching is recomputed as a whole rather than patched: an event that no
     longer matches anything should disappear, not linger as a stale pair.
+
+    ``published`` and ``inverted`` default to 0 when a caller leaves them out,
+    which is the same meaning the columns carry: not publishable, no side of
+    the pair flipped.
     """
+    events = [{"published": 0, **dict(event)} for event in events]
+    members = [{"inverted": 0, **dict(member)} for member in members]
     conn.execute("DELETE FROM matched_members")
     conn.execute("DELETE FROM matched_events")
     conn.executemany(
         """
         INSERT INTO matched_events (
             event_key, title, category, close_time, confidence, possible,
-            rules_differ, venue_count, gap, updated_at
+            published, rules_differ, venue_count, gap, updated_at
         ) VALUES (
             :event_key, :title, :category, :close_time, :confidence, :possible,
-            :rules_differ, :venue_count, :gap, :updated_at
+            :published, :rules_differ, :venue_count, :gap, :updated_at
         )
         """,
         [dict(event) for event in events],
@@ -791,9 +868,11 @@ def replace_matching(conn: sqlite3.Connection, events, members) -> tuple[int, in
     conn.executemany(
         """
         INSERT OR REPLACE INTO matched_members (
-            event_key, venue, market_id, outcome, confidence, rules_differ, matched_on
+            event_key, venue, market_id, outcome, confidence, rules_differ,
+            matched_on, inverted
         ) VALUES (
-            :event_key, :venue, :market_id, :outcome, :confidence, :rules_differ, :matched_on
+            :event_key, :venue, :market_id, :outcome, :confidence, :rules_differ,
+            :matched_on, :inverted
         )
         """,
         [dict(member) for member in members],
@@ -824,6 +903,7 @@ def read_matched_events(
     for raw in conn.execute(sql, params):
         row = dict(raw)
         row["possible"] = bool(row["possible"])
+        row["published"] = bool(row["published"])
         row["rules_differ"] = bool(row["rules_differ"])
         out.append(row)
     return out

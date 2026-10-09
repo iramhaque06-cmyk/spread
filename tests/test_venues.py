@@ -276,6 +276,133 @@ class ClobPriceHistoryTest(unittest.TestCase):
         self.assertEqual(get.call_count, 1)  # no CLOB call was possible
 
 
+class MarketTitleTest(unittest.TestCase):
+    """A Kalshi title has to name the bet, not just the series.
+
+    Every field name here is one Kalshi actually publishes on the market or
+    its event (see raw_samples/ and the field sweep in .review/kalshi_titles.py),
+    and every case is a real market whose title used to be shared by hundreds
+    of others.
+    """
+
+    def test_the_bracket_is_folded_into_the_title(self):
+        """1,350 markets were titled "SOL price on Oct 7, 2026?"."""
+        market = {
+            "title": "SOL price on Oct 7, 2026?",
+            "yes_sub_title": "$83.9999 or below",
+            "strike_type": "less",
+            "cap_strike": 84,
+        }
+        self.assertEqual(
+            kalshi.market_title(market), "SOL price on Oct 7, 2026, $83.9999 or below?"
+        )
+
+    def test_the_event_title_is_used_when_it_is_the_fuller_question(self):
+        """Only the event's copy carries the hour the market settles on."""
+        market = {"title": "Bitcoin price on Oct 7, 2026?", "yes_sub_title": "$86,400 or above"}
+        event = {"title": "BTC price on Oct 7, 2026 at 1pm EDT?"}
+        self.assertEqual(
+            kalshi.market_title(market, event=event),
+            "BTC price on Oct 7, 2026 at 1pm EDT, $86,400 or above?",
+        )
+
+    def test_a_fixture_market_keeps_the_game_in_front(self):
+        """"Will over 5.5 goals be scored?" was 203 markets, one per game."""
+        market = {"title": "Will over 5.5 goals be scored?", "yes_sub_title": "Over 5.5 goals scored"}
+        event = {"title": "Torino vs Udinese: Total Goals"}
+        self.assertEqual(
+            kalshi.market_title(market, event=event),
+            "Torino vs Udinese: Will over 5.5 goals be scored?",
+        )
+
+    def test_a_tie_market_gets_the_game_it_belongs_to(self):
+        market = {
+            "title": "Tie is the result",
+            "yes_sub_title": "Tie",
+            "strike_type": "structured",
+            "custom_strike": {"soccer_team": "111193d4-9b1f-4bd8-ab7c-9de252737f05"},
+        }
+        event = {"title": "Boyaca Chico vs Cucuta"}
+        self.assertEqual(
+            kalshi.market_title(market, event=event),
+            "Boyaca Chico vs Cucuta: Tie is the result",
+        )
+
+    def test_an_event_label_that_restates_the_question_is_left_out(self):
+        market = {
+            "title": "Will the Federal Reserve Hike rates by 0bps at their October 2026 meeting?",
+            "subtitle": "Hike 0bps",
+            "yes_sub_title": "Fed maintains rate",
+        }
+        event = {"title": "Fed decision in Oct 2026?"}
+        self.assertEqual(kalshi.market_title(market, event=event), market["title"])
+
+    def test_a_candidate_market_names_the_candidate(self):
+        market = {
+            "title": "Who will win the 2028 United States vice presidential election?",
+            "subtitle": ":: Democratic party",
+            "yes_sub_title": "Wes Moore",
+        }
+        self.assertEqual(
+            kalshi.market_title(market),
+            "Who will win the 2028 United States vice presidential election, Wes Moore?",
+        )
+
+    def test_numbers_come_from_the_strike_fields_when_no_label_exists(self):
+        market = {"title": "X on Oct 7, 2026?", "strike_type": "between",
+                  "floor_strike": 95500, "cap_strike": 95749.99}
+        self.assertEqual(
+            kalshi.market_title(market), "X on Oct 7, 2026, 95500 to 95749.99?"
+        )
+        self.assertEqual(
+            kalshi.market_title(
+                {"title": "X on Oct 7, 2026?", "strike_type": "greater", "floor_strike": 156.9999}
+            ),
+            "X on Oct 7, 2026, 156.9999 or above?",
+        )
+
+    def test_a_custom_strike_keeps_readable_values_and_drops_ids(self):
+        self.assertEqual(
+            kalshi.market_strike({"custom_strike": {"Recognizing country": "the United States of America"}}),
+            "Recognizing country the United States of America",
+        )
+        self.assertEqual(
+            kalshi.market_strike(
+                {"custom_strike": {"soccer_team": "111193d4-9b1f-4bd8-ab7c-9de252737f05"}}
+            ),
+            "",
+        )
+
+    def test_no_strike_fields_leaves_the_title_alone(self):
+        self.assertEqual(kalshi.market_title({"title": "A market"}), "A market")
+        self.assertEqual(kalshi.market_title({"title": ""}), "")
+
+    def test_the_catalog_row_carries_the_strike_title(self):
+        """parse_open_market is where the stored title comes from."""
+        raw = {
+            "ticker": "KXSOLE-26OCT0717-T156.9999",
+            "event_ticker": "KXSOLE-26OCT0717",
+            "title": "SOL price on Oct 7, 2026?",
+            "yes_sub_title": "$157 or above",
+            "strike_type": "greater",
+            "floor_strike": 156.9999,
+            "close_time": "2026-10-07T21:00:00Z",
+            "volume_24h": 12,
+        }
+        events = {
+            "KXSOLE-26OCT0717": {
+                "event_ticker": "KXSOLE-26OCT0717",
+                "series_ticker": "KXSOLE",
+                "title": "SOL price range on Oct 7, 2026 at 5pm EDT?",
+            }
+        }
+        series = {"KXSOLE": {"ticker": "KXSOLE", "title": "SOL price", "category": "Crypto"}}
+        record = kalshi.parse_open_market(raw, series=series, events=events)
+        self.assertEqual(
+            record.title, "SOL price range on Oct 7, 2026 at 5pm EDT, $157 or above?"
+        )
+
+
 class SlugifyTest(unittest.TestCase):
     """The URL slug must match Kalshi's own pages (checked vs their sitemap)."""
 

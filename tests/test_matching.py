@@ -1,10 +1,17 @@
 """Offline tests for cross-venue matching and the gap rules."""
 
 import unittest
+from datetime import datetime, timezone
 
 import gaps
 import matching
 from venues import MarketRecord
+
+# Every freshness judgement below is made against this instant instead of the
+# wall clock. A test that reads datetime.now() passes today and starts failing
+# on its own the day its fixture turns 24 hours old, which is exactly how three
+# gap tests broke. tests/test_no_real_clock.py keeps it that way.
+NOW = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
 
 ALIASES = {
     "new york knicks": ("knicks",),
@@ -60,17 +67,21 @@ class TitleMatchingTest(unittest.TestCase):
         self.assertEqual(len(found.members), 2)
         self.assertEqual({m[0] for m in found.members}, {"kalshi", "polymarket"})
 
-    def test_different_thresholds_are_possible_and_flagged_not_counted(self):
+    def test_different_thresholds_are_different_questions(self):
+        """The strike is part of the question, not a detail of its wording.
+
+        These two used to be stored as a near-match with a rules_differ caveat:
+        same subject, adjacent thresholds. They are two different bets, so the
+        strike check refuses the pair outright.
+        """
         records = [
             market("kalshi", "K1", "Will CPI rise more than 0.7% in September 2026?"),
             market("polymarket", "P1", "Will CPI rise more than 0.8% in September 2026?"),
         ]
-        [found] = matching.match_markets(
-            records, aliases=ALIASES, threshold=85.0, floor=50.0
+        self.assertEqual(
+            matching.match_markets(records, aliases=ALIASES, threshold=85.0, floor=50.0),
+            [],
         )
-        self.assertTrue(found.possible)
-        self.assertTrue(found.rules_differ)
-        self.assertLess(found.confidence, 85)
 
     def test_a_close_date_far_away_breaks_the_match(self):
         records = [
@@ -204,6 +215,7 @@ class GapTest(unittest.TestCase):
                     "polymarket", "prediction_market", 84.0, market_id="polymarket-1"
                 ),
             },
+            now=NOW,
         )
         self.assertEqual(gaps.gap(points), 5.0)
 
@@ -225,6 +237,7 @@ class GapTest(unittest.TestCase):
                     "polymarket", "prediction_market", 97.0, market_id="b"
                 ),
             },
+            now=NOW,
         )
         self.assertEqual(len(points), 2)
         self.assertIsNone(gaps.gap(points))
@@ -245,6 +258,7 @@ class GapTest(unittest.TestCase):
                     "polymarket", "prediction_market", 30.0, market_id="c"
                 ),
             },
+            now=NOW,
         )
         self.assertEqual(gaps.gap(points), 20.0)
 
@@ -258,6 +272,7 @@ class GapTest(unittest.TestCase):
                     "manifold", "play_money", 90.0, market_id="manifold-1"
                 ),
             },
+            now=NOW,
         )
         self.assertIsNone(gaps.gap(points))  # one real-money venue is not a gap
         self.assertEqual(sum(1 for p in points if p["real_money"]), 1)
@@ -276,6 +291,7 @@ class GapTest(unittest.TestCase):
                     "polymarket", "prediction_market", 60.0, market_id="polymarket-1"
                 ),
             },
+            now=NOW,
         )
         self.assertIsNone(gaps.gap(points))
 
@@ -290,7 +306,7 @@ class GapTest(unittest.TestCase):
 
     def test_a_market_missing_from_the_catalog_is_skipped(self):
         points = gaps.event_prices(
-            [{"venue": "kalshi", "market_id": "gone", "outcome": ""}], {}
+            [{"venue": "kalshi", "market_id": "gone", "outcome": ""}], {}, now=NOW
         )
         self.assertEqual(points, [])
 
@@ -304,6 +320,7 @@ class GapTest(unittest.TestCase):
                     "polymarket", "prediction_market", 25.0, market_id="polymarket-1"
                 ),
             },
+            now=NOW,
         )
         summary = gaps.summarise(points)
         self.assertEqual(summary["gap"], 5.0)

@@ -30,8 +30,9 @@ files are shaped for that and nothing else:
     the typed text lands in, never the rest.
 ``data/events/<id>.json``
     One matched event: its comparable prices with freshness already decided,
-    the price history the pipeline actually observed, the venue rule text and
-    the source links.
+    whether it is publishable (two fresh real-money venues on a confident
+    match, never a play-money one counted double), the price history the
+    pipeline actually observed, the venue rule text and the source links.
 ``data/events-index.json``
     The bridge between the two: which matched event a market key belongs to,
     and each event's venue count, price range and gap. A search finds markets;
@@ -374,6 +375,10 @@ def build_event(
     # document, which is the copy the site reads.
     if event["possible"]:
         summary["gap"] = None
+    # Publication is the same rule: a confident match with two fresh
+    # real-money venues. A play-money or forecast venue may sit in the event,
+    # labelled, without ever making it publishable.
+    published = bool(summary["published"]) and not event["possible"]
 
     member_by_key = {
         market_key(member["venue"], member["market_id"]): member for member in members
@@ -442,6 +447,7 @@ def build_event(
         "close_time": event["close_time"],
         "confidence": event["confidence"],
         "possible": event["possible"],
+        "published": published,
         "rules_differ": event["rules_differ"],
         "gap": summary["gap"],
         "venue_count": event["venue_count"],
@@ -703,6 +709,9 @@ def export_all(
         "with_gap": sum(
             1 for event in events if documents[event["event_key"]]["gap"] is not None
         ),
+        "published": sum(
+            1 for event in events if documents[event["event_key"]]["published"]
+        ),
         "possible": sum(1 for event in events if event["possible"]),
     }
 
@@ -938,6 +947,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"  events: {report['events']['count']} files, "
         f"{report['events']['with_gap']} with a gap, "
+        f"{report['events']['published']} published, "
         f"{report['events']['possible']} possible"
     )
     print(

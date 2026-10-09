@@ -6,12 +6,19 @@ A market alone is not enough for a link: Kalshi's public pages are addressed
 as ``/markets/{series}/{series-slug}/{event}``, so a quote needs the series
 title for the slug. ``fetch_quote`` walks market -> event -> series, caching
 each call.
+
+A Kalshi title is not yet a question: the brackets of one series are all
+called "SOL price on Oct 7, 2026?" (1,350 markets shared that one title), so
+:func:`market_title` folds the strike back in - "SOL price on Oct 7, 2026,
+above $140?" - from the fields Kalshi actually publishes for it.
 """
 
 from __future__ import annotations
 
 import re
 from typing import Iterator
+
+from matching import normalize, tokens
 
 from . import (
     DEFAULT_MAX_AGE,
@@ -153,7 +160,7 @@ def parse_open_market(
         venue="kalshi",
         venue_type="prediction_market",
         market_id=ticker,
-        title=market.get("title") or "",
+        title=market_title(market, event=event),
         category=(info.get("category") or event.get("category") or ""),
         close_time=market.get("close_time") or market.get("expiration_time") or "",
         outcomes=(outcome("Yes", price),),
@@ -231,10 +238,12 @@ def fetch_quote(ticker: str, *, max_age: int = DEFAULT_MAX_AGE) -> Quote:
     market = fetch_market(ticker, max_age=max_age)
     event = fetch_event(market["event_ticker"], max_age=max_age)
     series = fetch_series(event["series_ticker"])
-    return parse_market(market, series=series, fetched_at=now_iso())
+    return parse_market(market, series=series, event=event, fetched_at=now_iso())
 
 
-def parse_market(raw: dict, *, series: dict, fetched_at: str = "") -> Quote:
+def parse_market(
+    raw: dict, *, series: dict, event: dict | None = None, fetched_at: str = ""
+) -> Quote:
     """Turn a raw Kalshi market record into a :class:`Quote`.
 
     ``raw`` may be the bare market object or the ``{"market": ...}``
@@ -253,7 +262,7 @@ def parse_market(raw: dict, *, series: dict, fetched_at: str = "") -> Quote:
     return Quote(
         venue="kalshi",
         market_id=ticker,
-        title=market.get("title") or "",
+        title=market_title(market, event=event),
         price_cents=price_cents,
         price_kind=price_kind,
         volume=_volume(market),
@@ -268,6 +277,212 @@ def parse_market(raw: dict, *, series: dict, fetched_at: str = "") -> Quote:
         rules_text=rules_text(market),
         resolves_at=market.get("close_time") or market.get("expiration_time") or "",
     )
+
+
+# The fields that carry what one market of a series is betting on. Read from
+# Kalshi's own records rather than guessed: ``subtitle`` is the bracket label
+# where a series has one ("Hike 0bps", "$3,445 or above"), ``yes_sub_title``
+# carries it on most series, and the numeric strikes fill the rest.
+STRIKE_TEXT_FIELDS = ("yes_sub_title", "subtitle")
+
+
+def market_title(market: dict, *, event: dict | None = None) -> str:
+    """The question one market asks, with its subject and strike folded in.
+
+    Kalshi titles the brackets of a series identically - "SOL price on Oct 7,
+    2026?" appears on 1,350 markets - and puts the part that tells them apart
+    in ``subtitle``/``yes_sub_title``. A title without it names a series, not
+    a bet: neither a reader nor the matcher can tell $84-or-below from
+    $157-or-above. The strike is inserted where the question mark is, so the
+    result reads as one sentence.
+
+    The other half of the same problem is the per-fixture market: "Will over
+    5.5 goals be scored?" is 203 markets, one per game, because only the
+    event says which game it is. When the event names a subject the market
+    title never mentions, the event goes in front.
+    """
+    event_title = str((event or {}).get("title") or "").strip()
+    base = str(market.get("title") or "").strip() or event_title
+    if event_title and base != event_title:
+        fuller = _fuller_statement(base, event_title)
+        if fuller:
+            base = fuller
+        elif _another_subject(base, event_title):
+            base = f"{_event_subject(event_title)}: {base}"
+    strike = market_strike(market)
+    if not strike or _title_names(base, strike):
+        return base
+    if base.endswith("?"):
+        return f"{base[:-1].rstrip()}, {strike}?"
+    return f"{base} - {strike}" if base else strike
+
+
+def _fuller_statement(base: str, event_title: str) -> str:
+    """The longer of two near-duplicate statements, or ``""`` when they differ.
+
+    Kalshi states a series question twice - once on the market, once on the
+    event - and the event's copy is often the one that carries the hour
+    ("BTC price on Oct 7, 2026 at 1pm EDT?" against the market's "Bitcoin
+    price on Oct 7, 2026?"). Two titles that agree on almost every word are
+    one question, so the fuller wording wins.
+    """
+    words, theirs = tokens(normalize(base)), tokens(normalize(event_title))
+    if not words or not theirs:
+        return ""
+    shared = words & theirs
+    if len(shared) < 3 or len(shared) < min(len(words), len(theirs)) - 1:
+        return ""
+    return event_title if len(event_title) > len(base) else base
+
+
+def _event_subject(event_title: str) -> str:
+    """What an event is about, before its own market-type label.
+
+    Kalshi writes an event as "Torino vs Udinese: Total Goals" - the fixture,
+    then the market type the event covers. Only the first half names the thing
+    its markets are about, so that is what a market title is missing.
+    """
+    head, separator, _ = event_title.rpartition(":")
+    return (head if separator else event_title).strip() or event_title
+
+
+def _another_subject(base: str, event_title: str) -> bool:
+    """Whether the event names a subject the market title never mentions.
+
+    The catalog is full of markets titled by their *type* - "Will over 5.5
+    goals be scored?" is 203 markets, "Tie in the 1st half" 234 - because only
+    the event says which fixture they belong to. The test is whether the
+    event's subject is mostly missing from the market title: every one of
+    those shares under half its words, while an event label that restates the
+    question ("Fed decision in Oct 2026?" for a title about the Federal
+    Reserve in October 2026) shares more than half and is left alone.
+    """
+    subject = _event_subject(event_title)
+    words = tokens(normalize(subject))
+    if not words:
+        return False
+    ours = tokens(normalize(base))
+    if not ours:
+        return True
+    shared = sum(
+        1 for word in words if any(_same_word(word, mine) for mine in ours)
+    )
+    return shared * 2 < len(words)
+
+
+def _same_word(first: str, second: str) -> bool:
+    """Whether two words are one word written shorter ("Oct"/"October")."""
+    if first == second:
+        return True
+    return len(first) >= 3 and len(second) >= 3 and (
+        first.startswith(second) or second.startswith(first)
+    )
+
+
+def market_strike(market: dict) -> str:
+    """What this market bets on, in Kalshi's own words.
+
+    Kalshi's own bracket label first, then the numeric strike the API exposes
+    (``strike_type`` with ``floor_strike``/``cap_strike``), then any custom
+    strike it publishes as a small mapping.
+    """
+    return _strike_label(market) or _numeric_strike(market) or _custom_strike(market)
+
+
+def _strike_label(market: dict) -> str:
+    """Kalshi's own label for the outcome, when it has one.
+
+    ``subtitle`` is the bracket where a series has one - "Hike 0bps", "$3,445
+    or above" - and ``yes_sub_title`` is the outcome the market is about: the
+    same bracket on the price series, and the candidate on the election ones.
+    A bracket is preferred when the two disagree, because that is the strike;
+    otherwise the outcome label wins, which is what tells "Wes Moore" apart
+    from "Raphael Warnock". Some series prefix it with a bare separator
+    (":: Democratic party"), which is punctuation and not part of the label.
+    """
+    labels = [
+        str(market.get(field) or "").strip().lstrip(":").strip()
+        for field in STRIKE_TEXT_FIELDS
+    ]
+    labels = [label for label in labels if label]
+    for label in labels:
+        if re.search(r"\d", label):
+            return label
+    return labels[0] if labels else ""
+    return _numeric_strike(market) or _custom_strike(market)
+
+
+def _numeric_strike(market: dict) -> str:
+    """``floor_strike``/``cap_strike`` as a phrase, when there is no label."""
+    kind = str(market.get("strike_type") or "").strip().lower()
+    floor, cap = _strike_number(market.get("floor_strike")), _strike_number(
+        market.get("cap_strike")
+    )
+    if kind == "between" and floor and cap:
+        return f"{floor} to {cap}"
+    if kind in ("less", "less_or_equal") and cap:
+        return f"{cap} or below"
+    if kind in ("greater", "greater_or_equal") and floor:
+        return f"{floor} or above"
+    return ""
+
+
+def _strike_number(value) -> str:
+    """A strike as text, without a trailing ``.0`` on whole numbers.
+
+    ``repr`` and not ``%g``: ``95749.99`` must not print as ``95750``, because
+    that is a different strike from the one this market settles on.
+    """
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(number)) if number.is_integer() else repr(number)
+
+
+def _custom_strike(market: dict) -> str:
+    """A custom strike, as ``key value`` pairs, opaque ids left out.
+
+    A custom strike is a small mapping (``{"Hike": "0"}``). Its values are the
+    part that distinguishes one market from its siblings, but some are
+    internal ids (``{"soccer_team": "111193d4-..."}``), which tell a reader
+    nothing and would only make a title look broken.
+    """
+    custom = market.get("custom_strike")
+    if not isinstance(custom, dict):
+        return ""
+    parts = [
+        f"{key} {value}".strip()
+        for key, value in sorted(custom.items())
+        if value not in (None, "") and not _is_id(str(value))
+    ]
+    return ", ".join(parts)
+
+
+def _is_id(value: str) -> bool:
+    """Whether a value is an opaque identifier rather than a readable strike."""
+    return bool(re.fullmatch(r"[0-9a-fA-F-]{16,}", value.strip()))
+
+
+def _title_names(title: str, strike: str) -> bool:
+    """Whether the title already says the strike, in words or in numbers.
+
+    Titles that already carry their strike ("Will the Federal Reserve Hike
+    rates by 0bps...?") must not have it repeated, while a bracket series
+    whose title is only the series name gets it added.
+    """
+    text = title.lower()
+    if not text:
+        return False
+    label = strike.lower()
+    if label in text:
+        return True
+    numbers = re.findall(r"\d+(?:\.\d+)?", label)
+    if not numbers:
+        return False
+    return all(number in text for number in numbers)
 
 
 def rules_text(market: dict) -> str:

@@ -19,12 +19,26 @@ How a pair is accepted, in order:
 2. **Fuzzy score.** rapidfuzz ``token_set_ratio``: order-insensitive, and it
    forgives one venue adding a clause the other omits, which is exactly how
    these venues word the same question.
-3. **Entity check.** Numbers must not contradict each other. Two markets that
-   quote different thresholds are the *same topic*, not the same bet - they
-   stay a "possible" match with ``rules_differ`` set, which is how the curated
-   CPI pair behaves today.
-4. **Date check.** Close dates must be within a window of each other, or one
-   of them must be missing.
+3. **Strike check.** The numbers the two markets are actually betting on
+   (:func:`strikes`) must be the same set: years, calendar dates and clock
+   times are stripped out, because every market in a series carries them and
+   they distinguish nothing. ``1600 or higher`` and ``2000 or higher`` are the
+   same subject and different bets, so they are refused rather than stored as
+   a near-match.
+4. **Entity check.** The names a title commits to - teams from the alias
+   table, capitalized words, tickers (:func:`entities`) - must overlap. A
+   governor race in Iowa is not a governor race in California because the word
+   "governor" appears in both.
+5. **Direction check.** Above/below, before/after, win/lose and up/down must
+   agree (:func:`directions`). One clean exception is the complementary pair:
+   "above 100000 on Dec 31" and "below 100000 on Dec 31" are the same event
+   from the two sides, so they match with the up side marked ``inverted`` and
+   its price read as ``100 - price`` (see gaps.py).
+6. **Date check.** Close dates must be within :data:`DATE_WINDOW_DAYS` of each
+   other, or one of them must be missing.
+
+One event holds at most one market per venue, enforced in
+:func:`_one_market_per_venue` and asserted in :func:`_validate`.
 
 Sports are matched separately and more strictly: the two teams come from an
 alias table, the start times must be within a day, and only winner/moneyline
@@ -42,16 +56,27 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from rapidfuzz import fuzz
 
 ALIAS_PATH = Path(__file__).resolve().parent / "team_aliases.json"
 
-CONFIDENT = 85.0  # at or above: a real match
+# Confidence is scored on 0-100. CONFIDENT (85) is the line between a match
+# the site may publish and a "possible" one it may not; FLOOR (70) is the line
+# below which a pair is not stored at all. Both are parameters of
+# match_markets, so a caller can tighten them for a pass of its own.
+CONFIDENT = 85.0  # at or above: a real match, publishable with two real-money venues
 FLOOR = 70.0  # below this: not even worth storing as possible
 MAX_MEMBERS = 10  # a bigger cluster is a warning sign, not an event
-DATE_WINDOW_DAYS = 10  # non-sports
+DATE_WINDOW_DAYS = 3  # non-sports: two markets about one event close together
 SPORTS_DATE_WINDOW_DAYS = 1  # sports, per the brief
+# Sports confidence is these three pieces of evidence, added up: the same team
+# named on both sides, a start time we can place, and a winner/moneyline market
+# rather than a spread. Nothing is hard-coded per match.
+SPORTS_TEAM_POINTS = 45
+SPORTS_DAY_POINTS = 25
+SPORTS_MARKET_POINTS = 20
 
 # ---- Candidate config: which pairs are compared at all ---------------------- #
 # Separate from the scoring thresholds above on purpose: this decides who gets
@@ -65,16 +90,100 @@ MAX_BUCKET_LOGS = 20  # capped buckets named one by one, then summarised
 
 LOGGER = logging.getLogger(__name__)
 
-# Function words only. Direction words (above, below, at least) are kept:
-# "above 100" and "below 100" are opposite bets, and dropping them would let
-# them match.
+# Function words only. Direction words are deliberately kept: "above 100" and
+# "below 100" are opposite bets, and so are "before 2027" and "after 2027",
+# so before/after/than/between/yes/no are all meaningful tokens here.
 STOPWORDS = frozenset(
     """
-    a an and are as at be before by did do does for from has have in into is it
+    a an and are as at be by did do does for from has have in into is it
     its of on or that the their there these this to was were will with within
-    yes no if any about after during between end than then when which who whom
+    if any about during end when which who whom whose
     """.split()
 )
+
+MONTHS = frozenset(
+    """
+    january february march april may june july august september october november
+    december jan feb mar apr jun jul aug sep sept oct nov dec
+    """.split()
+)
+WEEKDAYS = frozenset(
+    """
+    monday tuesday wednesday thursday friday saturday sunday mon tue tues wed
+    thu thur thurs fri sat sun
+    """.split()
+)
+# Units that make a number a quantity rather than a date. A number carries the
+# unit it was written with, so "140" and "140 dollars" compare equal while
+# "0.7 percent" and "0.7 points" do not.
+UNITS = frozenset(
+    """
+    percent percentage points point dollars dollar usd cents cent bps basis
+    degrees degree contracts contract shares share votes vote people persons
+    seats seat goals goal runs run points touchdowns yards metres meters miles
+    kilometres kilometers billion million trillion thousand seconds minutes
+    hours days weeks months years
+    """.split()
+)
+# Suffixes that turn a number into a date or a clock time, not a strike.
+DATE_SUFFIXES = frozenset(
+    "st nd rd th am pm utc gmt edt est cdt cst mdt mst pdt pst bst cet"
+    .split()
+)
+DATE_CONTEXT = frozenset({"week", "day", "no", "number", "round", "leg"}) | MONTHS | WEEKDAYS
+
+# The same entity, named two ways. Teams come from team_aliases.json
+# (load_aliases); this is the much smaller table for everything else that gets
+# told apart only by spelling - a ticker against its coin, an abbreviation
+# against the body it stands for. Keys are matched on word boundaries,
+# longest first, and both sides canonicalize to the same value.
+ENTITY_ALIASES = {
+    "fed": "federal-reserve",
+    "federal reserve": "federal-reserve",
+    "fomc": "federal-reserve",
+    "btc": "bitcoin",
+    "bitcoin": "bitcoin",
+    "eth": "ethereum",
+    "ethereum": "ethereum",
+    "sol": "solana",
+    "solana": "solana",
+    "xrp": "ripple",
+    "doge": "dogecoin",
+    "potus": "us-president",
+    "president of the united states": "us-president",
+    "scotus": "supreme-court",
+    "supreme court": "supreme-court",
+    "cpi": "consumer-price-index",
+    "consumer price index": "consumer-price-index",
+    "gop": "republican-party",
+    "republican party": "republican-party",
+    "republicans": "republican-party",
+    "democrats": "democratic-party",
+    "democratic party": "democratic-party",
+}
+
+# Direction families: a token on the left and a token on the right are
+# opposite answers to the same question.
+DIRECTION_FAMILIES = (
+    (
+        "threshold",
+        {"above", "over", "more", "higher", "greater", "exceed", "exceeds", "least", "up"},
+        {"below", "under", "less", "lower", "most", "down"},
+    ),
+    ("time", {"before", "prior", "until", "ahead"}, {"after", "since", "following"}),
+    (
+        "outcome",
+        {"win", "wins", "won", "beat", "beats", "defeat", "defeats", "advance", "advances"},
+        {"lose", "loses", "lost", "eliminated"},
+    ),
+    (
+        "change",
+        {"increase", "increases", "rise", "rises", "hike", "hikes", "gain", "gains"},
+        {"decrease", "decreases", "fall", "falls", "cut", "cuts", "drop", "drops"},
+    ),
+)
+# A number written like this is a year, not a strike, unless it carries a unit.
+YEAR_RANGE = (1900, 2100)
 
 _SPORTS_HINT = re.compile(
     r"\b(nfl|nba|mlb|nhl|ncaa|ncaaf|ncaab|wnba|mls|ufc|f1|premier league|"
@@ -84,6 +193,21 @@ _SPORTS_HINT = re.compile(
 )
 _WIN_WORDS = re.compile(r"\b(win|wins|beat|beats|defeat|defeats|advance|"
                         r"progress|qualify|champion|champions)\b", re.I)
+
+
+class Pair(NamedTuple):
+    """One scored pair: its score, and what the two sides disagreed about.
+
+    ``rules_differ`` means the two markets answer one question from opposite
+    sides, which is where two venues can settle the same event differently.
+    ``inverted`` names the side whose price has to be read as ``100 - price``
+    before the two can be compared (see gaps.py): 0 or 1, indexing the pair as
+    it is keyed, or -1 when neither side is flipped.
+    """
+
+    score: float
+    rules_differ: bool
+    inverted: int
 
 
 @dataclass(frozen=True)
@@ -98,7 +222,9 @@ class Match:
     possible: bool
     rules_differ: bool
     matched_on: str  # "title" | "teams"
-    members: tuple  # (venue, market_id, outcome, confidence, rules_differ)
+    # (venue, market_id, outcome, confidence, rules_differ, matched_on, inverted),
+    # one per venue, each carrying the weakest pair it was actually scored in.
+    members: tuple
 
 
 # --------------------------------------------------------------------------- #
@@ -144,6 +270,170 @@ def numbers(text: str) -> set[str]:
     return found
 
 
+# --------------------------------------------------------------------------- #
+# What a title commits to: its strikes, its names, its directions.
+# --------------------------------------------------------------------------- #
+
+_NUMBER_PREFIX = re.compile(r"(\d+(?:\.\d+)?)([a-z]*)")
+_MONTH_WORDS = MONTHS | WEEKDAYS
+
+
+def _strike_units(text: str) -> dict[str, str]:
+    """``value -> unit`` for the numbers a title is actually betting on."""
+    words = normalize(text).split()
+    found: dict[str, str] = {}
+    for index, word in enumerate(words):
+        match = _NUMBER_PREFIX.fullmatch(word)
+        if match is None:
+            continue
+        value, suffix = match.group(1), match.group(2)
+        following = words[index + 1] if index + 1 < len(words) else ""
+        previous = words[index - 1] if index else ""
+        unit = suffix if suffix in UNITS else (following if following in UNITS else "")
+        if suffix in DATE_SUFFIXES:  # 31st, 1pm, 5utc
+            continue
+        if previous in DATE_CONTEXT or following in _MONTH_WORDS:  # Oct 7, 7 October
+            continue
+        if not unit and len(value) == 4 and YEAR_RANGE[0] <= float(value) <= YEAR_RANGE[1]:
+            continue  # a bare four-digit number in range is a year
+        found.setdefault(value, unit)
+    return found
+
+
+def strikes(text: str) -> frozenset[str]:
+    """The numbers a title bets on, with their units, dates stripped out.
+
+    Years (``2026``), calendar dates (``Oct 7``, ``31st``) and clock times are
+    removed: every market in a series carries them, so they distinguish
+    nothing and must not earn a match. What remains is the part a market can
+    be wrong about - the strike, the threshold, the count - each keyed with the
+    unit it was written in (``0.7 percent``, ``95750 dollars``).
+    """
+    return frozenset(
+        f"{value} {unit}" if unit else value
+        for value, unit in _strike_units(text).items()
+    )
+
+
+def strikes_disagree(first: str, second: str) -> bool:
+    """Whether two titles cannot be stating the same bet.
+
+    Values must match exactly; a unit named on both sides must match too, so
+    "140" and "140 dollars" agree while "0.7 percent" and "0.7 points" do not.
+    """
+    left, right = _strike_units(first), _strike_units(second)
+    if set(left) != set(right):
+        return True
+    return any(
+        left[value] and right[value] and left[value] != right[value] for value in left
+    )
+
+
+def _default_aliases() -> dict:
+    """The team table, read once per process rather than once per title."""
+    global _ALIAS_CACHE
+    if _ALIAS_CACHE is None:
+        _ALIAS_CACHE = load_aliases()
+    return _ALIAS_CACHE
+
+
+def entities(text: str, aliases: dict | None = None) -> frozenset[str]:
+    """The names a title commits to, canonicalized so two spellings agree.
+
+    Three sources, in order of trust: the team alias table, the entity alias
+    table (:data:`ENTITY_ALIASES`, where ``fed`` and ``federal reserve`` become
+    one name), and finally capitalization itself - a word the venue capitalized
+    is a proper noun, and a short all-caps word is a ticker. Months, weekdays
+    and the first word of a title are not names.
+
+    Returns ids like ``name:federal-reserve`` and ``team:new york knicks``.
+    """
+    aliases = _default_aliases() if aliases is None else aliases
+    raw = text or ""
+    normalized = normalize(raw)
+    found: set[str] = set()
+    leftovers = set(normalized.split())
+
+    for key, names in aliases.items():
+        for name in (key, *names):
+            phrase = normalize(name)
+            if phrase and re.search(rf"\b{re.escape(phrase)}\b", normalized):
+                found.add(f"team:{key}")
+                leftovers -= set(phrase.split())
+                break
+    for phrase in sorted(ENTITY_ALIASES, key=lambda item: (-len(item.split()), item)):
+        if re.search(rf"\b{re.escape(phrase)}\b", normalized):
+            found.add(f"name:{ENTITY_ALIASES[phrase]}")
+            leftovers -= set(phrase.split())
+
+    for index, word in enumerate(re.findall(r"[A-Za-z][A-Za-z.'-]*", raw)):
+        cleaned = word.strip(".'-")
+        lowered = normalize(cleaned)
+        if not lowered or lowered in STOPWORDS or lowered in _MONTH_WORDS:
+            continue
+        canonical = ENTITY_ALIASES.get(lowered, lowered)
+        if cleaned.isupper() and 2 <= len(cleaned) <= 6:  # BTC, NVDA, SOL
+            found.add(f"name:{canonical}")
+        elif index > 0 and cleaned[:1].isupper() and lowered in leftovers:
+            found.add(f"name:{canonical}")
+    return frozenset(found)
+
+
+def _entities_overlap(first: frozenset, second: frozenset) -> bool:
+    """Names must overlap - unless one side names nothing at all.
+
+    A title with no recognizable names ("Will the price of gold rise?") gets
+    no vote rather than a veto: this check exists to keep two differently named
+    things apart, not to insist that every title is full of names.
+    """
+    if not first or not second:
+        return True
+    return bool(first & second)
+
+
+def directions(text: str) -> dict[str, str]:
+    """Which way each direction family points in a title.
+
+    ``{"threshold": "up"}`` for "above 140", ``{"time": "after"}`` for "after
+    2027". A family named both ways ("rise or fall") is ``mixed``, which
+    matches nothing. A family only one side names proves nothing and is left
+    out of the comparison.
+    """
+    words = set(normalize(text).split())
+    found: dict[str, str] = {}
+    for family, up, down in DIRECTION_FAMILIES:
+        has_up, has_down = bool(words & up), bool(words & down)
+        if has_up and has_down:
+            found[family] = "mixed"
+        elif has_up:
+            found[family] = "up"
+        elif has_down:
+            found[family] = "down"
+    return found
+
+
+def directions_disagree(first: str, second: str) -> tuple[bool, bool]:
+    """``(disagree, clean_inverse)`` for two titles' directions.
+
+    A clean inverse is the one disagreement that is still one event: the
+    threshold family pointing up on one side and down on the other, with
+    nothing else disagreeing. "above 100000 on Dec 31" and "below 100000 on
+    Dec 31" are the same bet read from the two sides, so the pair matches and
+    the up side is marked inverted.
+    """
+    left, right = directions(first), directions(second)
+    disagreeing = sorted(
+        family for family in set(left) & set(right) if left[family] != right[family]
+    )
+    if not disagreeing:
+        return False, False
+    invertible = disagreeing == ["threshold"] and {
+        left["threshold"],
+        right["threshold"],
+    } == {"up", "down"}
+    return True, invertible
+
+
 def _parse_date(value: str):
     if not value or value in ("NA", "na"):
         return None
@@ -184,6 +474,9 @@ def _canonical_team(name: str, aliases: dict[str, tuple[str, ...]]) -> str | Non
     return next(iter(found)) if len(found) == 1 else None
 
 
+_ALIAS_CACHE: dict | None = None
+
+
 def _found_teams(title: str, aliases: dict[str, tuple[str, ...]]) -> set[str]:
     """Canonical teams named in a title, matched on word boundaries."""
     normalized = normalize(title)
@@ -217,29 +510,38 @@ def match_markets(
     pass works on :func:`canonical_records`, so a shuffled feed and a shuffled
     interpreter both give the same events.
     """
-    aliases = load_aliases() if aliases is None else aliases
+    aliases = _default_aliases() if aliases is None else aliases
     records = canonical_records(records)
     titles = [normalize(_title(item)) for item in records]
+    raw = [_title(item) for item in records]
+    venues = [_venue(item) for item in records]
 
-    pairs: dict[tuple[int, int], tuple[float, bool]] = {}
-    _title_pairs(records, titles, pairs, floor, per_market)
+    pairs: dict[tuple[int, int], Pair] = {}
+    _title_pairs(records, raw, titles, pairs, floor, per_market, aliases)
 
-    groups = _components(len(records), pairs, max_members=max_members)
     matches = []
-    for members in groups:
-        group = [records[index] for index in members]
-        scores = [
-            pairs[key][0]
-            for key in _pairs_within(members)
-            if key in pairs
-        ]
-        confidence = round(min(scores), 2) if scores else 0.0
-        rules_differ = any(pairs[key][1] for key in _pairs_within(members) if key in pairs)
-        possible = confidence < threshold or len(members) > max_members
-        matches.append(_to_match(group, confidence, possible, rules_differ, "title"))
+    for group in _components(len(records), pairs, max_members=max_members):
+        members = _one_market_per_venue(group, pairs, venues)
+        members = _connected(members, pairs)
+        if len(members) < 2:
+            continue
+        evidence = _member_evidence(members, pairs)
+        confidence = round(min(row[0] for row in evidence), 2)
+        matches.append(
+            _to_match(
+                [records[index] for index in members],
+                confidence,
+                confidence < threshold or len(members) > max_members,
+                any(row[1] for row in evidence),
+                "title",
+                evidence=evidence,
+            )
+        )
 
-    matches.extend(_sports_matches(records, titles, aliases, threshold, floor))
-    return _dedupe(matches)
+    matches.extend(_sports_matches(records, raw, aliases, threshold))
+    matches = _dedupe(matches)
+    _validate(matches)
+    return matches
 
 
 # --------------------------------------------------------------------------- #
@@ -453,40 +755,192 @@ def candidate_pairs(
     return weights, stats
 
 
-def _title_pairs(records, titles, pairs, floor, per_market) -> None:
+def _title_pairs(records, raw, titles, pairs, floor, per_market, aliases) -> None:
     """Score every candidate pair, in a stable order, and keep the real ones."""
     weights, _ = candidate_pairs(records, titles, per_market=per_market)
     for first, second in sorted(weights):
-        scored = _score(titles[first], titles[second], records[first], records[second])
-        if scored is not None and scored[0] >= floor:
+        scored = _score(
+            titles[first],
+            titles[second],
+            records[first],
+            records[second],
+            raw_a=raw[first],
+            raw_b=raw[second],
+            aliases=aliases,
+        )
+        if scored is not None and scored.score >= floor:
             pairs[(first, second)] = scored
 
 
-def _score(text_a: str, text_b: str, record_a, record_b):
-    """``(score, numbers_disagree)`` for one pair, or ``None`` to reject it."""
-    shared = tokens(text_a) & tokens(text_b)
-    if len(shared) < 2:
-        return None
-    score = float(fuzz.token_set_ratio(text_a, text_b))
+def _member_evidence(members, pairs) -> list[tuple[float, bool, bool]]:
+    """Per member: its own weakest scored pair, and what that pair disagreed on.
 
+    The pass used to stamp an event's number on every member, so a market that
+    only just cleared the floor looked exactly as certain as the pair holding
+    the group together. A member now carries the minimum over the pairs it was
+    actually scored in, which are cross-venue by construction.
+
+    ``inverted`` is per member, not per pair: in "above 100" against "below
+    100" only the up side's price has to be turned around, and marking both
+    sides would flip the comparison twice (see gaps.py).
+    """
+    evidence = []
+    for position in members:
+        incident = [
+            (key, pairs[key])
+            for key in _pairs_within(members)
+            if position in key and key in pairs
+        ]
+        evidence.append(
+            (
+                round(min(pair.score for _, pair in incident), 2),
+                any(pair.rules_differ for _, pair in incident),
+                any(
+                    pair.inverted >= 0 and key[pair.inverted] == position
+                    for key, pair in incident
+                ),
+            )
+        )
+    return evidence
+
+
+def _one_market_per_venue(group, pairs, venues) -> list[int]:
+    """One market per venue: that venue's best-connected market keeps its place.
+
+    Two markets of the same venue in one event are two different questions - a
+    run of brackets, or a venue's own outcomes - and storing them together
+    invents a comparison nobody made. The market with the strongest total
+    score against the other venues' members stays; the rest go back to being
+    unmatched, and a group that shrinks below two is dropped.
+    """
+    chosen: list[int] = []
+    for venue in sorted({venues[position] for position in group}):
+        options = [position for position in group if venues[position] == venue]
+        if len(options) == 1:
+            chosen.extend(options)
+            continue
+        cross_venue = [
+            key
+            for key in _pairs_within(group)
+            if venues[key[0]] != venue and venues[key[1]] != venue
+        ]
+        chosen.append(
+            max(
+                sorted(options),
+                key=lambda position: (
+                    sum(
+                        pairs[key].score
+                        for key in cross_venue
+                        if position in key and key in pairs
+                    ),
+                    -position,
+                ),
+            )
+        )
+    return sorted(chosen)
+
+
+def _connected(members, pairs) -> list[int]:
+    """Drop any member left with no scored pair inside the group.
+
+    Moving a same-venue market out can leave the rest with nothing tying them
+    together; an event of unconnected markets would claim a relationship no
+    pair ever scored.
+    """
+    kept = list(members)
+    while len(kept) >= 2:
+        remaining = [
+            position
+            for position in kept
+            if any(key in pairs for key in _pairs_within(kept) if position in key)
+        ]
+        if len(remaining) == len(kept):
+            return kept
+        kept = remaining
+    return []
+
+
+def _validate(matches) -> None:
+    """The invariant a stored event must never break, asserted not assumed.
+
+    One market per venue is the point of an event: two markets from one venue
+    are two questions, and a gap across them would compare a venue with
+    itself. The pass above enforces it; this checks it, so a future change
+    that breaks it fails here instead of on the site.
+    """
+    for match in matches:
+        venues = [member[0] for member in match.members]
+        assert len(set(venues)) == len(venues), (
+            f"{match.event_key}: a venue appears more than once: {venues}"
+        )
+        assert len(match.members) >= 2, f"{match.event_key}: an event needs two markets"
+
+
+def _score(
+    text_a: str,
+    text_b: str,
+    record_a,
+    record_b,
+    *,
+    raw_a: str | None = None,
+    raw_b: str | None = None,
+    aliases: dict | None = None,
+) -> Pair | None:
+    """``Pair`` for one candidate, or ``None`` to reject it.
+
+    The gates run cheapest first and each one is decisive: a title that fails
+    the strike, entity or direction check is not a weaker match, it is a
+    different question, and storing it as "possible" only moves the mistake
+    into the export.
+    """
+    if len(tokens(text_a) & tokens(text_b)) < 2:
+        return None
     gap = _days_apart(_close(record_a), _close(record_b))
     if gap is not None and gap > DATE_WINDOW_DAYS:
         return None
 
-    first, second = numbers(text_a), numbers(text_b)
-    disagree = False
-    if first and second:
-        if first == second:
-            score += 5
-        else:
-            disagree = True
-            score = min(score, CONFIDENT - 5)  # possible, never a counted gap
+    if strikes_disagree(text_a, text_b):
+        return None
+    disagree, invertible = directions_disagree(text_a, text_b)
+    if disagree and not invertible:
+        return None
+    if invertible and not _same_instant(_close(record_a), _close(record_b)):
+        return None  # an inverse needs the same moment, not merely a close one
+    if not _entities_overlap(
+        entities(raw_a or text_a, aliases), entities(raw_b or text_b, aliases)
+    ):
+        return None
 
-    return (round(min(score, 100.0), 2), disagree)
+    score = float(fuzz.token_set_ratio(text_a, text_b))
+    if _strike_units(text_a):  # the same numbers, stated independently
+        score += 5
+    return Pair(
+        score=round(min(score, 100.0), 2),
+        # Opposite sides of one question is exactly where two venues can settle
+        # differently, so the pair carries the caveat rather than hiding it.
+        rules_differ=invertible,
+        # Which side of the pair is the "up" one: that is the side whose yes
+        # means the opposite of the other's, so its price is the one that has
+        # to be turned around before the two can be compared.
+        inverted=0 if invertible and directions(text_a)["threshold"] == "up" else
+        (1 if invertible else -1),
+    )
 
 
-def _sports_matches(records, titles, aliases, threshold, floor) -> list[Match]:
-    """Teams + start date + winner markets only, per the brief's scope."""
+def _same_instant(first: str, second: str) -> bool:
+    """Whether two close stamps name the same moment (unknown counts as same)."""
+    gap = _days_apart(first, second)
+    return gap is None or gap == 0.0
+
+
+def _sports_matches(records, raw, aliases, threshold) -> list[Match]:
+    """Teams + start date + winner markets only, per the brief's scope.
+
+    Confidence here is the evidence itself, not a magic number: naming the
+    same team, playing on a day we can place, and being a winner market rather
+    than a spread or a total. A market that quotes a strike ("win by 5+ ",
+    "score 120 points") is a different question and is left out.
+    """
     sportsbook, predictions = [], []
     for position, item in enumerate(records):
         if _is_sportsbook(item):
@@ -503,25 +957,29 @@ def _sports_matches(records, titles, aliases, threshold, floor) -> list[Match]:
             team_key = _canonical_team(team, aliases) if team else None
             if team_key is None:
                 continue
-            members = []
+            candidates = []
             for other in predictions:
                 found = _found_teams(_title(records[other]), aliases)
                 if team_key not in found or len(found) != 1:
                     continue
                 if not _WIN_WORDS.search(_title(records[other])):
                     continue
+                if strikes(raw[other]):  # a spread or a total, not the moneyline
+                    continue
                 gap = _days_apart(_close(records[position]), _close(records[other]))
                 if gap is not None and gap > SPORTS_DATE_WINDOW_DAYS:
                     continue
-                score = 90.0 if gap is not None else 82.0
-                members.append(
-                    (other, score, "teams")
-                )
-            if not members:
+                # Same team + a winner market, and the day when we know it.
+                confidence = SPORTS_TEAM_POINTS + SPORTS_MARKET_POINTS
+                if gap is not None:
+                    confidence += SPORTS_DAY_POINTS
+                candidates.append((other, confidence))
+            if not candidates:
                 continue
-            chosen = max(members, key=lambda item: item[1])
-            confidence = chosen[1]
-            group = [records[position], records[chosen[0]]]
+            # Every candidate carries the same evidence, so the first in
+            # canonical order wins and the choice is reproducible.
+            chosen, confidence = min(candidates)
+            group = [records[position], records[chosen]]
             matches.append(
                 _to_match(
                     group,
@@ -545,19 +1003,29 @@ def _teams_in_title(title: str) -> tuple[str, str]:
     return away.strip(), home.strip()
 
 
-def _to_match(group, confidence, possible, rules_differ, matched_on, outcomes=None) -> Match:
+def _to_match(
+    group, confidence, possible, rules_differ, matched_on, outcomes=None, evidence=None
+) -> Match:
+    """One event row, with each member carrying its own scored evidence.
+
+    ``evidence`` runs parallel to ``group``: ``(confidence, rules_differ,
+    inverted)`` per member. Without it (the sports path) every member shares
+    the group's number and is never inverted.
+    """
     outcomes = outcomes or {}
     members = []
-    for item in group:
+    for index, item in enumerate(group):
         venue = _venue(item)
+        own = evidence[index] if evidence else (confidence, rules_differ, False)
         members.append(
             (
                 venue,
                 str(_field(item, "market_id") or ""),
                 outcomes.get(venue, ""),
-                confidence,
-                1 if rules_differ else 0,
+                own[0],
+                1 if own[1] else 0,
                 matched_on,
+                1 if own[2] else 0,
             )
         )
     members.sort()

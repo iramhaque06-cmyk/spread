@@ -140,22 +140,38 @@ Primary key: `(venue, market_id)`. Indexes on `volume DESC`, `(venue, is_open)`,
 ### 2.2 Matching tables
 
 - **`events`** — one row per real-world event: `event_key`, `title`, `category`, `close_time`,
-  `rules_differ`, `confidence`, `possible` (1 when confidence < 0.85), `venue_count`.
-- **`event_members`** — `(event_key, venue, market_id, confidence, rules_differ, matched_on)`.
-  A market belongs to at most one event.
+  `rules_differ`, `confidence`, `possible` (1 when confidence < 85 on the 0–100 scale),
+  `published` (1 when the comparison may be shown as a real one), `venue_count`.
+- **`event_members`** — `(event_key, venue, market_id, confidence, rules_differ, matched_on,
+  inverted)`. A market belongs to at most one event, and **one event holds at most one market
+  per venue** (enforced by taking that venue's best-connected market, asserted after every
+  pass, and re-checked by `verify_events.py`). `inverted` marks the "above" side of an
+  above/below pair, whose price reads as `100 - price`.
 - **Matching rules (Phase 2):**
-  - non-sports: rapidfuzz `token_set_ratio` on normalized titles **plus** close-date proximity
-    **plus** an entity check (numbers/dates/names must agree — "0.7%" ≠ "0.8%", "100k" vs
-    "100,000" is normalized first). Store confidence 0–100.
+  - **candidates:** each market is offered the markets it shares a token with, weighted by
+    inverse document frequency, and keeps the ten heaviest cross-venue ones.
+  - non-sports, in order: rapidfuzz `token_set_ratio` on normalized titles, **plus**
+    close-date proximity (`DATE_WINDOW_DAYS = 3`, one day for sports), **plus** three hard
+    checks that reject rather than weaken a pair — the **strikes** (numbers with units, years
+    and dates stripped: "0.7%" ≠ "0.8%", "1600 or higher" ≠ "2000 or higher"), the **entities**
+    (proper nouns, tickers, team alias table: an Iowa governor race is not a California one),
+    and the **directions** (above/below, before/after, win/lose). One clean exception: an
+    above/below pair on the same strike and instant is one event read from its two sides,
+    stored with `inverted`.
   - sports: **teams (alias table) + start date within 1 day + market type = winner/moneyline
-    only**. Sport keys come from The Odds API; team aliases live in a small JSON file
-    (e.g. "LA Lakers"/"Los Angeles Lakers").
-  - confidence < 0.85 ⇒ `possible = 1`, shown as "possible match", **never** counted in a gap.
+    only**, with confidence built from that evidence rather than a constant. Sport keys come
+    from The Odds API; team aliases live in a small JSON file (e.g. "LA Lakers"/"Los Angeles
+    Lakers").
+  - confidence < 85 ⇒ `possible = 1`, shown as "possible match", **never** counted in a gap,
+    and never `published`.
 - **Gap rule (unchanged in spirit, widened in scope):** gap = **max − min of fresh prices from
   `venue_type IN ('prediction_market','sportsbook')` only**, in points; `null` when fewer than
   two fresh real-money venues. `play_money` and `forecast` rows are rendered in their own
-  section and **never enter a gap**. Matches below 0.85 excluded. `rules_differ` = 1 is shown
+  section and **never enter a gap**. Matches below 85 excluded. `rules_differ` = 1 is shown
   as a caveat, and **a differing-rules pair still shows its gap but is flagged** (same as today).
+  `published` = confidence ≥ 85 **and** at least two distinct real-money venues with a fresh
+  price; a play-money or forecast venue may attach to a published event and never counts
+  toward those two.
 
 ### 2.3 Support tables
 
@@ -281,7 +297,7 @@ python run_all.py --prices-only   # prices → export only (30 min job)
 | 2 | **GitHub Pages bandwidth**: 50 MB × 48 deploys/day ≈ 2.4 GB/day ≈ 72 GB/month against a soft 100 GB/month | Site could be throttled | Run deploys less often than every 30 min, or publish only `home.json`+`events` on the 30-min job and full shards on the 6 h job |
 | 3 | **Kalshi keyless rate limits are undocumented** (docs describe authenticated buckets only) | Blocking or 429s | Self-limit to ≤ 3 req/s, jittered backoff, cache, resumable cursor, circuit breaker |
 | 4 | **Kalshi category is null on market records** | Categories cost extra requests via `/events` + `/series` | Cache series/event metadata 24 h; derive category from the series ticker prefix as a fallback |
-| 5 | **Matching false positives** across 175k markets | A bogus gap is worse than no gap | Confidence stored; < 0.85 ⇒ "possible", never in a gap; entity + date + market-type checks; rules_differ flag; manual alias table |
+| 5 | **Matching false positives** across 175k markets | A bogus gap is worse than no gap | Confidence stored; < 85 ⇒ "possible", never in a gap; strike + entity + direction + date checks; one venue per event; rules_differ flag; manual alias table |
 | 6 | **Sportsbook quota burn** (500 credits/month) | Losing odds mid-month | ≤ 8 credits/run, ≤ 3 runs/day/event, hard stop at 80 %, keep last odds + show age, log every call |
 | 7 | **De-vig correctness** — normalizing across outcomes assumes a complete market | Wrong implied probability | Only de-vig when every outcome of that market is present; otherwise store raw and mark it `no_devig` |
 | 8 | **PredictIt skipped**; **Metaculus closed to the public** | Three venues instead of five | Decision §6; both are documented, not forgotten |
@@ -320,8 +336,8 @@ before any key handling** (§5, risk 9).
   de-vig; quota guard). Pagination, retries, backoff, caching, per-venue limits as in §3.
   Normalize into `spread.db` (§2). Matching with rapidfuzz + date/entity checks; sports by
   alias table + start date ±1 day + moneyline only. Confidence + `rules_differ` stored;
-  < 0.85 ⇒ possible, never in a gap. Gap = fresh **real-money** max − min only; play-money and
-  forecast shown separately.
+  < 85 ⇒ possible, never in a gap, and never published. Gap = fresh **real-money** max − min
+  only; play-money and forecast shown separately.
 - **Phase 3 — export.** `manifest.json`, ≤ 1.5 MB catalog shards with compact keys, a
   first-keystroke < 2 MB search index plus lazy shards, `events/<id>.json`, `home.json`;
   `run_all.py` with `--prices-only`.

@@ -12,9 +12,14 @@ widen them:
 * **Fresh only.** A price that cannot be shown to be from the last 24 hours is
   excluded (:mod:`freshness` decides, per venue, from the best evidence the
   venue publishes). One fresh venue is not a gap; it is a single number.
-* **Possible matches never count.** A pair the matcher scored below 0.85 is
-  stored as "possible" and is excluded here, so a near-match cannot manufacture
-  a spread that does not exist.
+* **Possible matches never count.** A pair the matcher scored below
+  :data:`matching.CONFIDENT` (85 on the 0-100 scale) is stored as "possible"
+  and is excluded here, so a near-match cannot manufacture a spread that does
+  not exist.
+* **An inverted member is read from the other side.** In an above/below pair
+  the "above" market's yes price is the no price of the question the two
+  venues share, so it is read as ``100 - price`` before anything is compared
+  (:func:`event_prices`).
 
 ``rules_differ`` is deliberately *not* a reason to hide a gap: two markets can
 settle differently and still disagree on price, and that disagreement is the
@@ -45,8 +50,24 @@ def member_price(row: dict, outcome: str = "") -> float | None:
     return None if price is None else float(price)
 
 
+def _is_inverted(member) -> bool:
+    """Whether this member's price is the other side of its own question."""
+    try:
+        value = member["inverted"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return bool(value)
+
+
 def event_prices(members, markets_by_key, *, now=None) -> list[dict]:
-    """One comparable, freshness-labelled price per matched member."""
+    """One comparable, freshness-labelled price per matched member.
+
+    A member the matcher flagged as inverted is the "above" side of an
+    above/below pair, and its yes price is the *no* price of the question both
+    venues are answering; reading it as ``100 - price`` puts the two sides on
+    one scale. Without that, a 62% "above" and a 45% "below" would read as a
+    17 point disagreement instead of a 7 point one.
+    """
     points = []
     for member in members:
         key = (member.get("venue"), member.get("market_id"))
@@ -56,6 +77,8 @@ def event_prices(members, markets_by_key, *, now=None) -> list[dict]:
         price = member_price(row, member.get("outcome") or "")
         if price is None:
             continue
+        if _is_inverted(member):
+            price = 100.0 - price
         verdict = freshness.assess(row, now=now)
         venue_type = row.get("venue_type") or ""
         points.append(
@@ -85,17 +108,41 @@ def gap(points) -> float | None:
     two venues (PLAN.md §2.2).
     """
     eligible = [point for point in points if point.get("gap_eligible")]
-    if len({point.get("venue") for point in eligible}) < 2:
+    if len(fresh_venues(points)) < 2:
         return None
     prices = [point["price"] for point in eligible]
     return round(max(prices) - min(prices), 2)
 
 
+def fresh_venues(points) -> list[str]:
+    """Distinct real-money venues quoting a fresh price: who a gap needs.
+
+    A venue counts once however many of its markets are in the event, and a
+    play-money or community-forecast venue never counts at all.
+    """
+    return sorted(
+        {
+            point["venue"]
+            for point in points
+            if point.get("gap_eligible") and point.get("venue")
+        }
+    )
+
+
 def summarise(points) -> dict:
-    """The gap plus the count it was computed from, for the export."""
+    """The gap, plus the counts it was computed from, for the export.
+
+    ``published`` is the same rule the stored column uses: only a confident
+    match with two fresh real-money venues is a comparison a reader may be
+    told about. Two venues, not two prices - and a third venue on play money
+    may attach without ever being one of the two.
+    """
+    venues = fresh_venues(points)
     return {
         "gap": gap(points),
+        "published": len(venues) >= 2,
         "real_money": sum(1 for point in points if point.get("real_money")),
         "fresh": sum(1 for point in points if point.get("fresh")),
         "venues": sorted({point["venue"] for point in points if point.get("venue")}),
+        "fresh_venues": venues,
     }

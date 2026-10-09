@@ -354,7 +354,7 @@ def _live(db_path, limit: int, warnings: list[str]) -> None:
             except KeyError:
                 print(f"  {venue:11} skipped: ODDS_API_KEY is not set")
                 continue
-        started = time.time()
+        started = time.perf_counter()  # an interval, not a reading of the clock
         try:
             records = list(lister())
         except Exception as exc:  # a live probe may fail; report it, do not crash
@@ -365,7 +365,7 @@ def _live(db_path, limit: int, warnings: list[str]) -> None:
         priced = sum(1 for record in records if record.price is not None)
         print(
             f"  {venue:11} listed {len(records):5} markets, {priced:5} priced"
-            f"  [{time.time() - started:.1f}s]"
+            f"  [{time.perf_counter() - started:.1f}s]"
         )
         if not records and venue != "odds_api":
             warnings.append(f"{venue} live listing returned no markets")

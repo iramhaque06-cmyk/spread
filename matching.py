@@ -7,6 +7,12 @@ match below :data:`CONFIDENT` (0.85 on the 0-100 scale) is stored as
 
 How a pair is accepted, in order:
 
+0. **Candidate selection.** Every market is offered the markets it shares a
+   token with - all of them for a rare token, only those inside the same
+   three-day close window and venue type for a common one - and keeps the ten
+   heaviest cross-venue candidates, each shared token weighted by inverse
+   document frequency (:func:`candidate_pairs`). Nothing outside that list is
+   ever scored.
 1. **Cheap gate.** Both titles are normalized (case, punctuation, ``100,000``
    and ``100k`` become one canonical number) and must share at least two
    significant tokens. Nothing else is even scored.
@@ -29,6 +35,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -41,11 +49,21 @@ ALIAS_PATH = Path(__file__).resolve().parent / "team_aliases.json"
 
 CONFIDENT = 85.0  # at or above: a real match
 FLOOR = 70.0  # below this: not even worth storing as possible
-RARE_DF = 300  # a token rarer than this is what blocks two markets together
-MAX_CANDIDATES = 40  # pairs scored per market, to bound a 175k-market pass
 MAX_MEMBERS = 10  # a bigger cluster is a warning sign, not an event
 DATE_WINDOW_DAYS = 10  # non-sports
 SPORTS_DATE_WINDOW_DAYS = 1  # sports, per the brief
+
+# ---- Candidate config: which pairs are compared at all ---------------------- #
+# Separate from the scoring thresholds above on purpose: this decides who gets
+# scored, not who gets matched. The numbers are here, not inline, because they
+# are the dial that trades runtime against coverage on a 175k-market pass.
+CANDIDATES_PER_MARKET = 10  # K: candidates kept per market, heaviest first
+RARE_DF = 300  # at or below this document frequency a token links any two markets
+BLOCK_BUCKET_DAYS = 3  # a common token pairs markets only this close together
+MAX_BUCKET_PAIRS = 2000  # pairs enumerated per (common token, date bucket)
+MAX_BUCKET_LOGS = 20  # capped buckets named one by one, then summarised
+
+LOGGER = logging.getLogger(__name__)
 
 # Function words only. Direction words (above, below, at least) are kept:
 # "above 100" and "below 100" are opposite bets, and dropping them would let
@@ -189,20 +207,22 @@ def match_markets(
     aliases: dict[str, tuple[str, ...]] | None = None,
     threshold: float = CONFIDENT,
     floor: float = FLOOR,
-    max_candidates: int = MAX_CANDIDATES,
+    per_market: int = CANDIDATES_PER_MARKET,
     max_members: int = MAX_MEMBERS,
 ) -> list[Match]:
     """Match every open market against the others and return event groups.
 
     ``records`` may be :class:`venues.MarketRecord` objects or stored rows;
-    both expose the same field names.
+    both expose the same field names. The input order does not matter: the
+    pass works on :func:`canonical_records`, so a shuffled feed and a shuffled
+    interpreter both give the same events.
     """
     aliases = load_aliases() if aliases is None else aliases
-    records = [item for item in records if _title(item)]
+    records = canonical_records(records)
     titles = [normalize(_title(item)) for item in records]
 
     pairs: dict[tuple[int, int], tuple[float, bool]] = {}
-    _title_pairs(records, titles, pairs, threshold, floor, max_candidates)
+    _title_pairs(records, titles, pairs, floor, per_market)
 
     groups = _components(len(records), pairs, max_members=max_members)
     matches = []
@@ -222,41 +242,224 @@ def match_markets(
     return _dedupe(matches)
 
 
-def _title_pairs(records, titles, pairs, threshold, floor, max_candidates) -> None:
-    """Score cross-venue pairs, blocked by a rare shared token."""
-    document_frequency = Counter()
+# --------------------------------------------------------------------------- #
+# Candidate selection: which pairs are even worth scoring.
+# --------------------------------------------------------------------------- #
+
+
+def record_key(record) -> tuple[str, str]:
+    """How one market is named, everywhere: ``(venue, market_id)``."""
+    return (_venue(record), str(_field(record, "market_id") or ""))
+
+
+def canonical_records(records) -> list:
+    """The one order the whole pass depends on: ``(venue, market_id)``, combos out.
+
+    Everything downstream names a market by its position here, so this sort is
+    what makes a shuffled feed produce the same candidates and the same
+    events. Combos are dropped rather than scored: a parlay bundles other
+    markets, so any pair it joined would compare a bundle with a single
+    question.
+    """
+    return sorted(
+        (item for item in records if _title(item) and not _is_combo(item)),
+        key=record_key,
+    )
+
+
+def _is_combo(record) -> bool:
+    """Whether the venue flagged this market as a parlay/combo.
+
+    Read defensively, because the field is optional: Kalshi drops combos at the
+    source (``mve_filter=exclude``), so today this is False for every row the
+    catalog can produce, and the guard is what stops a venue's parlays from
+    ever being matched against single questions.
+    """
+    value = _field(record, "is_combo")
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no")
+    return bool(value)
+
+
+def _idf(document_frequency: int, total: int) -> float:
+    """Inverse document frequency, smoothed so a universal token still weighs.
+
+    Plain ``log(total / df)`` is exactly zero for a token every market holds,
+    which is the weight the brief's Fed/Bitcoin/Trump tokens would get - and a
+    zero weight cannot put two markets in one candidate list. The ``1 +``
+    keeps every shared token worth something while a token only two markets
+    hold still outweighs a common one many times over.
+    """
+    return math.log(1.0 + total / max(document_frequency, 1))
+
+
+def _date_bucket(record, days: int = BLOCK_BUCKET_DAYS) -> int | None:
+    """Which ``days``-wide close-date window a market falls in, or ``None``.
+
+    Two markets in the same bucket close within ``days`` of each other, which
+    is the evidence a common token needs before it counts as a link.
+    """
+    moment = _parse_date(_close(record))
+    if moment is None:
+        return None
+    return int(moment.timestamp() // (days * 86400))
+
+
+def bucket_pairs(group, cap: int) -> tuple[dict, int]:
+    """Pairs inside one bucket, nearest market ids first, at most `cap`.
+
+    Enumerating by distance rather than by a prefix is the point: a capped
+    bucket still gives every market neighbours, where spending the whole cap
+    on the alphabetically first markets is the very failure this candidate
+    pass exists to fix. Returns the partner lists and the pair count.
+    """
+    partners: dict[int, list[int]] = defaultdict(list)
+    made = 0
+    for width in range(1, len(group)):
+        for index in range(len(group) - width):
+            if made >= cap:
+                return partners, made
+            first, second = group[index], group[index + width]
+            partners[first].append(second)
+            partners[second].append(first)
+            made += 1
+    return partners, made
+
+
+def _log_capped(capped: list[str]) -> None:
+    """Say which buckets were cut short; a silent cap hides lost comparisons."""
+    for line in capped[:MAX_BUCKET_LOGS]:
+        LOGGER.warning("candidate bucket capped: %s", line)
+    if len(capped) > MAX_BUCKET_LOGS:
+        LOGGER.warning(
+            "candidate buckets capped: %d more kept open uncompared",
+            len(capped) - MAX_BUCKET_LOGS,
+        )
+
+
+def candidate_pairs(
+    records,
+    titles=None,
+    *,
+    per_market: int = CANDIDATES_PER_MARKET,
+    rare_df: int = RARE_DF,
+    bucket_days: int = BLOCK_BUCKET_DAYS,
+    max_bucket_pairs: int = MAX_BUCKET_PAIRS,
+) -> tuple[dict, dict]:
+    """Weighted cross-venue candidate pairs, ranked per market.
+
+    Every token a market holds offers it candidates, and each shared token
+    contributes :func:`_idf`. A rare token (``df <= rare_df``) offers every
+    market that holds it, with no positional cut; a common one offers only
+    markets in the same (close-date window, venue_type) bucket, so "trump"
+    cannot drag the whole catalog into one comparison set. Markets without a
+    close date take no common-token links at all: nothing proves they sit in
+    the same window. Each market then keeps its ``per_market`` heaviest
+    cross-venue candidates, ties broken by ``(venue, market_id)``.
+
+    `records` must already be in :func:`canonical_records` order, because the
+    returned keys are positions into it. Returns ``(weights, stats)`` where
+    ``weights`` maps ``(i, j)`` with ``i < j`` to the pair's token weight.
+    """
+    if titles is None:
+        titles = [normalize(_title(item)) for item in records]
+    total = len(records)
+    stats = {
+        "records": total,
+        "rare_tokens": 0,
+        "common_tokens": 0,
+        "bucket_pairs": 0,
+        "capped_buckets": 0,
+        "candidates": 0,
+        "pairs": 0,
+    }
+    if total < 2:
+        return {}, stats
+
     per_record = []
+    document_frequency: Counter = Counter()
     for title in titles:
         found = tokens(title)
         per_record.append(found)
         document_frequency.update(found)
+    if not document_frequency:
+        return {}, stats
 
-    rare = {token for token, count in document_frequency.items() if count <= RARE_DF}
-    index: dict[str, list[int]] = defaultdict(list)
-    for position, found in enumerate(per_record):
-        for token in found & rare:
-            index[token].append(position)
-
+    buckets = [
+        (_field(item, "venue_type") or "", _date_bucket(item, bucket_days))
+        for item in records
+    ]
     venues = [_venue(item) for item in records]
+
+    # Tokens are iterated in sorted order because they are sets: the index must
+    # not depend on how the interpreter happened to hash a word this run.
+    rare_index: dict[str, list[int]] = defaultdict(list)
+    common_index: dict[tuple, list[int]] = defaultdict(list)
     for position, found in enumerate(per_record):
-        candidates: set[int] = set()
-        for token in found & rare:
-            posting = index[token]
-            if len(posting) > max_candidates:
-                posting = posting[:max_candidates]
-            candidates.update(posting)
-            if len(candidates) >= max_candidates * 3:
-                break
-        candidates.discard(position)
-        for other in candidates:
-            if venues[position] == venues[other]:
-                continue  # the same venue can hold two brackets; never a pair
-            key = (min(position, other), max(position, other))
-            if key in pairs:
-                continue
-            scored = _score(titles[position], titles[other], records[position], records[other])
-            if scored is not None and scored[0] >= floor:
-                pairs[key] = scored
+        for token in sorted(found):
+            if document_frequency[token] <= rare_df:
+                rare_index[token].append(position)
+            elif buckets[position][1] is not None:
+                common_index[(token, buckets[position])].append(position)
+    stats["rare_tokens"] = len(rare_index)
+    stats["common_tokens"] = len({token for token, _ in common_index})
+
+    # One enumeration per (token, bucket), not one per market that holds it.
+    common_partners: dict[tuple, dict[int, list[int]]] = {}
+    capped: list[str] = []
+    for key in sorted(common_index, key=lambda item: (item[0], str(item[1]))):
+        group = common_index[key]
+        if len(group) < 2:
+            continue
+        partners, made = bucket_pairs(group, max_bucket_pairs)
+        common_partners[key] = partners
+        stats["bucket_pairs"] += made
+        possible = len(group) * (len(group) - 1) // 2
+        if made < possible:
+            stats["capped_buckets"] += 1
+            capped.append(
+                f"token {key[0]!r} in {key[1][0] or 'unknown type'} "
+                f"closing {key[1][1]}: {len(group)} markets, "
+                f"kept {made} of {possible} pairs"
+            )
+
+    weights: dict[tuple[int, int], float] = {}
+    for position, found in enumerate(per_record):
+        totals: dict[int, float] = defaultdict(float)
+        for token in sorted(found):
+            document_frequency_of = document_frequency[token]
+            weight = _idf(document_frequency_of, total)
+            if document_frequency_of <= rare_df:
+                others = rare_index[token]
+            else:
+                others = common_partners.get(
+                    (token, buckets[position]), {}
+                ).get(position, ())
+            for other in others:
+                if other != position:
+                    totals[other] += weight
+        ranked = sorted(
+            (other for other in totals if venues[other] != venues[position]),
+            key=lambda other: (-totals[other], record_key(records[other])),
+        )
+        for other in ranked[:per_market]:
+            stats["candidates"] += 1
+            weights[(min(position, other), max(position, other))] = totals[other]
+
+    stats["pairs"] = len(weights)
+    _log_capped(capped)
+    return weights, stats
+
+
+def _title_pairs(records, titles, pairs, floor, per_market) -> None:
+    """Score every candidate pair, in a stable order, and keep the real ones."""
+    weights, _ = candidate_pairs(records, titles, per_market=per_market)
+    for first, second in sorted(weights):
+        scored = _score(titles[first], titles[second], records[first], records[second])
+        if scored is not None and scored[0] >= floor:
+            pairs[(first, second)] = scored
 
 
 def _score(text_a: str, text_b: str, record_a, record_b):
